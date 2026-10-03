@@ -181,6 +181,7 @@ def test_activation_preview_has_no_keys_and_has_revision(tmp_path):
     inventory.steam.set_account("76561198000000001", "Test")
     inventory.steam.set_library([10])
     inventory.snapshot["rows"] = [row("Eligible", 20)]
+    inventory.bind_humble("synthetic-hb")
     plan = inventory.plan_activation([row_id(inventory.snapshot["rows"][0])])
     assert plan["revision"] == inventory.revision
     assert "AAAAA" not in json.dumps(plan)
@@ -193,6 +194,7 @@ def test_http_activation_requires_preview_consent_and_matching_revision(tmp_path
     inventory.steam.set_account("76561198000000001", "Test")
     inventory.steam.set_library([10])
     inventory.snapshot["rows"] = [row("Eligible", 20)]
+    inventory.bind_humble("synthetic-hb")
     server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(inventory, "test-token"))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

@@ -23,6 +23,7 @@ from humble_bundle_keys.auth import AuthOptions, get_authenticated_context
 from humble_bundle_keys.browser_choice import derive_membership_slug
 from humble_bundle_keys.choice_policy import choice_policy, upgrade_membership
 from humble_bundle_keys.deadlines import annotate_rows
+from humble_bundle_keys.hb_activation import HBActivationState, identify_account
 from humble_bundle_keys.month_claim import claim_months, month_slug, preview_months
 from humble_bundle_keys.operation_report import OperationReport
 from humble_bundle_keys.reveal import preview_reveal, reveal_all
@@ -133,6 +134,7 @@ class Inventory:
         directory.mkdir(parents=True, exist_ok=True)
         self.report = OperationReport.load(directory / "operation-report.json")
         self.steam = SteamState(directory)
+        self.hb_activation = HBActivationState(directory)
         handler = RotatingFileHandler(directory / "scan.log", maxBytes=2_000_000,
                                       backupCount=2, encoding="utf-8", delay=True)
         handler.setFormatter(logging.Formatter("%(message)s"))
@@ -185,12 +187,32 @@ class Inventory:
 
     def view(self):
         with self.lock:
-            return {**self.snapshot, "rows": self.steam.annotate(self.snapshot["rows"]),
+            return {**self.snapshot, "rows": self.hb_activation.annotate(
+                        self.steam.annotate(self.snapshot["rows"])),
                     "steam": self.steam.summary(), "busy": self.busy,
                     "month_preview": self.month_plan,
                     "operation_report": self.report.view() if self.report else None,
                     "message": self.message, "error": self.error, "revision": self.revision,
                     "action": self.action}
+
+    def bind_humble(self, identity):
+        with self.lock:
+            previous = self.hb_activation.data["current_account"]
+            if previous and previous != identity:
+                self.snapshot = {"rows": [], "memberships": [], "scanned_at": None,
+                                 "warnings": []}
+                self.activation_plan = self.month_plan = None
+                self.publish(self.snapshot)
+            self.hb_activation.bind(identity, self.snapshot["rows"], self.steam)
+            self.revision += 1
+
+    def mark_hb_activation(self, row, steamid):
+        with self.lock:
+            result = self.steam.result(row["key"])
+            if result:
+                result["humble_account"] = self.hb_activation.data["current_account"]
+                self.steam.save()
+            self.hb_activation.record(row, steamid)
 
     def touch(self):
         with self.lock:
@@ -233,11 +255,14 @@ class Inventory:
 
     def plan_activation(self, selected_ids):
         with self.lock:
+            if not self.hb_activation.data["current_account"]:
+                raise ValueError("请先登录或扫描 Humble，识别激活标记所属账号。")
             if self.busy:
                 raise ValueError("已有操作正在执行，请结束后再预览。")
             candidates, skipped = activation_candidates(
                 self.snapshot["rows"], selected_ids, self.steam)
             self.activation_plan = {"id": secrets.token_urlsafe(24), "revision": self.revision,
+                                    "humble_account": self.hb_activation.data["current_account"],
                                     "steamid": self.steam.account()["steamid"],
                                     "selected_ids": [r["id"] for r in candidates]}
             return {"plan_id": self.activation_plan["id"], "revision": self.revision,
@@ -300,6 +325,17 @@ class Inventory:
             self.directory.mkdir(parents=True, exist_ok=True)
             with sync_playwright() as pw:
                 if action.startswith("steam") or action == "activate":
+                    if action == "activate":
+                        hb_browser, hb_context = get_authenticated_context(pw, AuthOptions(
+                            storage_state_path=self.directory / "storage_state.json",
+                            headless=True, browser_channel=available_browser_channel()))
+                        try:
+                            identity = identify_account(hb_context)
+                            if identity != self.action_options["humble_account"]:
+                                self.bind_humble(identity)
+                                raise ValueError("Humble 账号与预览不同，请重新扫描并预览。")
+                        finally:
+                            hb_browser.close()
                     self.run_steam(pw, action)
                     return
                 browser, context = get_authenticated_context(pw, AuthOptions(
@@ -308,6 +344,7 @@ class Inventory:
                     browser_channel=available_browser_channel(),
                 ))
                 try:
+                    self.bind_humble(identify_account(context))
                     if action == "login":
                         self.update("登录成功，现在可以扫描账户。")
                         return

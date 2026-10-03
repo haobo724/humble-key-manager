@@ -298,6 +298,8 @@ def activate_batch(page, context, steam, rows, selected_ids, inventory):
             inventory.log("steam_activation_transport_failed", game=row["game_title"],
                           error_type=type(exc).__name__)
         steam.record(key, status, row.get("steam_app_id"))
+        if status == "activated":
+            inventory.mark_hb_activation(row, account["steamid"])
         inventory.touch()
         inventory.log("steam_activation_result", game=row["game_title"], status=status)
         succeeded += status == "activated"
