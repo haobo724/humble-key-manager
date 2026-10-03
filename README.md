@@ -6,6 +6,20 @@
 索性做个可视化界面，把没领的游戏、没刮的 Key 和 Steam 库放在一起管理。
 目前只支持 Humble Bundle，暂时也没打算接别的平台——毕竟我自己没买过别家的慈善包。
 
+## 界面预览
+
+游戏列表、刮取进度和结果汇总：
+
+![主界面](assets/screenshots/mainUI.png)
+
+旧版 Choice 按月勾选，先看剩余额度再领取：
+
+![Choice 月包管理](assets/screenshots/choice.png)
+
+按兑换期限和 Steam 库状态筛选：
+
+![筛选功能](assets/screenshots/filter.png)
+
 ## 来源与许可
 
 基于 **[gfargo/humble-bundle-keys](https://github.com/gfargo/humble-bundle-keys)** 二次开发。
