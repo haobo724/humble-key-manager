@@ -2,6 +2,10 @@
 
 本地 Humble Bundle 游戏与 Key 管理器：历史 Choice 选择、批量刮取、期限筛选、Steam 库核对和显式批量激活。
 
+做这个主要是想清理自己攒了好多年、一直懒得兑换的 Key。一个个翻月包实在太麻烦，
+索性做个可视化界面，把没领的游戏、没刮的 Key 和 Steam 库放在一起管理。
+目前只支持 Humble Bundle，暂时也没打算接别的平台——毕竟我自己没买过别家的慈善包。
+
 ## 来源与许可
 
 基于 **[gfargo/humble-bundle-keys](https://github.com/gfargo/humble-bundle-keys)** 二次开发。
@@ -100,8 +104,13 @@ Steam 结果保存在 `steam.json`，仅以 Key 的 SHA-256 标识记录；日�
 
 ## 数据与隐私
 
-登录会话、游戏 Key、账户扫描、缓存和日志只存放在本机 `.humble-bundle-keys/`，不纳入 Git。
-不要分享该目录、导出的 CSV 或含有真实 Key 的截图。发布版不携带真实账户记录。
+数据保存在运行目录下的 `.humble-bundle-keys/web/`，用本地 JSON 文件记录游戏列表、
+Key、登录会话、Steam 库和最近一次刮取结果。下次启动会自动读取，不用从头扫；
+重新扫描才更新官网状态，登录会话过期后再登录即可。
+
+换目录运行时，可以用 `--data-dir "你的旧数据目录"` 继续读取原记录。
+备份整个数据目录就能保留记录，但里面有真实 Key 和登录会话，不要上传或分享。
+这个目录已被 Git 忽略，仓库里没有真实账户数据。
 上游捕获样例中的订单标识和 Key 已替换为一致的合成数据；使用全新的 Git 历史独立发布。
 保留原命令行 `humble-bundle-keys`，Web 入口为 `humble-bundle-keys-web`。
 并行仅用于批量无限额 Choice 月份，最多 2 个独立浏览器会话；同月内和限额月份串行。
