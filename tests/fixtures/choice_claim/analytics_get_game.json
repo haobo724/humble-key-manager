@@ -1,0 +1,29 @@
+{
+  "phase": "membership",
+  "url": "https://www.humblebundle.com/api/v1/analytics/content-choice/choice/choice/get-game/march_2026_choice/zerohour",
+  "status": 200,
+  "method": "POST",
+  "request_headers": {
+    "sec-ch-ua-platform": "\"macOS\"",
+    "referer": "https://www.humblebundle.com/membership/march-2026",
+    "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+    "sec-ch-ua": "\"Chromium\";v=\"147\", \"Not.A/Brand\";v=\"8\"",
+    "sec-ch-ua-mobile": "?0"
+  },
+  "request_body": null,
+  "response_headers": {
+    "cache-control": "private",
+    "cf-cache-status": "DYNAMIC",
+    "cf-ray": "9f6958399fd90787-IAD",
+    "expires": "Mon, 04 May 2026 17:49:53 GMT",
+    "content-length": "0",
+    "date": "Mon, 04 May 2026 17:49:53 GMT",
+    "content-type": "text/html; charset=utf-8",
+    "vary": "Cookie",
+    "server": "cloudflare",
+    "x-cloud-trace-context": "2090c4fdc9b5e526d850c7085a33b465"
+  },
+  "response_body": {
+    "_raw_text": ""
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "phase": "membership",
+  "url": "https://www.humblebundle.com/api/v1/analytics/content-choice/content-tile/click/march_2026_choice/zerohour",
+  "status": 200,
+  "method": "POST",
+  "request_headers": {
+    "sec-ch-ua-platform": "\"macOS\"",
+    "referer": "https://www.humblebundle.com/membership/march-2026",
+    "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+    "sec-ch-ua": "\"Chromium\";v=\"147\", \"Not.A/Brand\";v=\"8\"",
+    "sec-ch-ua-mobile": "?0"
+  },
+  "request_body": null,
+  "response_headers": {
+    "cache-control": "private",
+    "cf-cache-status": "DYNAMIC",
+    "cf-ray": "9f6958277e8b0787-IAD",
+    "expires": "Mon, 04 May 2026 17:49:50 GMT",
+    "content-length": "0",
+    "date": "Mon, 04 May 2026 17:49:50 GMT",
+    "content-type": "text/html; charset=utf-8",
+    "vary": "Cookie",
+    "server": "cloudflare",
+    "x-cloud-trace-context": "f79414cc607aef01ec3741dcb556e3b9"
+  },
+  "response_body": {
+    "_raw_text": ""
+  }
+}

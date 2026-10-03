@@ -1,0 +1,121 @@
+# =====================================================================
+# humble-bundle-keys .gitignore
+#
+# Anything that could leak a real Steam key, an auth token, an order
+# gamekey, or PII MUST be excluded here. We've had a lot of those file
+# shapes appear during development. Be paranoid — a single committed
+# diagnose-raw/ folder would expose every revealed key the user has.
+# =====================================================================
+
+# --- Python build/runtime artefacts ----------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- Virtualenvs ------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+
+# --- Editors / OS -----------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Test artefacts ---------------------------------------------------
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# =====================================================================
+# SECRETS / SENSITIVE DATA — NEVER COMMIT
+# =====================================================================
+
+# Persisted Humble session — has an authenticated _simpleauth_sess cookie
+storage_state.json
+steam-storage-state.json
+inventory.json
+steam.json
+operation-report.json
+months-cache/
+.humble-bundle-keys/
+.humble-keys/                         # legacy name from pre-0.4.0
+
+# Output CSVs contain the user's real keys
+*.csv
+!examples/*.csv                       # tiny sanitized example, if we ship one
+
+# Diagnose bundles. The whole `humble-diagnose/` tree gets created by
+# `humble-bundle-keys diagnose` and the raw/ subfolder explicitly contains
+# real keys — we sanitize into safe-to-share/ but the raw/ side stays.
+# Just exclude the whole top-level directory; users can attach
+# safe-to-share.zip to issues without committing anything.
+humble-diagnose/
+
+# Order cache — contains full order JSON including some user metadata
+orders-cache/
+
+# Run logs — auto-written to ~/.humble-bundle-keys/runs/, but if a user
+# moves them into the repo or uses --log-file inside the repo, exclude.
+*.log
+runs/
+
+# Debug screenshots / HTML dumps from --debug-dir
+Screenshot*.png
+screenshot-*.png
+debug-*.png
+debug-*.html
+debug/
+trace-*.zip
+trace.zip
+
+# Internal design docs — content is captured in .kiro/steering/ instead.
+# These contain reverse-engineered API contracts and architecture notes
+# that are useful locally but shouldn't be in the repo.
+docs/
+
+# Kiro editor
+.kiro
+
+# Marketing website (separate repo: humble-bundle-keys-www)
+.www
+
+# GitHub Wiki (checked out as a separate git repo for local editing)
+.wiki/
+
+# Dev-time downloaded captures (any .png at the repo root is suspect)
+/Screenshot*.png
+
+# Anything beginning with `MY_` is by convention personal scratch
+MY_*
+
+# .env files (we don't currently use any, but defence in depth — these
+# are conventionally where folks put HUMBLE_SESSION_COOKIE)
+.env
+.env.*
+!.env.example

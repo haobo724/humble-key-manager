@@ -1,0 +1,34 @@
+{
+  "phase": "membership",
+  "url": "https://www.humblebundle.com/humbler/redeemkey",
+  "status": 200,
+  "method": "POST",
+  "request_headers": {
+    "sec-ch-ua-platform": "\"macOS\"",
+    "referer": "https://www.humblebundle.com/membership/march-2026",
+    "sec-ch-ua": "\"Chromium\";v=\"147\", \"Not.A/Brand\";v=\"8\"",
+    "sec-ch-ua-mobile": "?0",
+    "x-requested-with": "XMLHttpRequest",
+    "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+    "accept": "application/json, text/javascript, */*; q=0.01",
+    "content-type": "application/x-www-form-urlencoded; charset=UTF-8"
+  },
+  "request_body": "keytype=zerohour_row_choice_steam&key=SYNTHETICORDER0000&keyindex=0",
+  "response_headers": {
+    "cache-control": "private",
+    "content-encoding": "gzip",
+    "cf-cache-status": "DYNAMIC",
+    "cf-ray": "9f69583da8470787-IAD",
+    "expires": "Mon, 04 May 2026 17:49:54 GMT",
+    "content-length": "62",
+    "date": "Mon, 04 May 2026 17:49:54 GMT",
+    "content-type": "application/json",
+    "vary": "Cookie, Accept-Encoding",
+    "server": "cloudflare",
+    "x-cloud-trace-context": "264d6edaa4667125ec3741dcb556e8b2"
+  },
+  "response_body": {
+    "key": "REDACTED-KEY",
+    "success": true
+  }
+}
