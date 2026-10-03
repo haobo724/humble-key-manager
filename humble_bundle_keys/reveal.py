@@ -2,6 +2,7 @@
 import logging
 import time
 from dataclasses import asdict
+from datetime import datetime, timezone
 
 from humble_bundle_keys._orders_cache import OrderCache
 from humble_bundle_keys.api import ApiOptions, ApiScraper, _extract_tpk
@@ -113,16 +114,17 @@ def reveal_all(context, inventory, selected_ids=None):
     def save_key(order, tpk, key):
         tpk["redeemed_key_val"] = key
         game = _extract_tpk(tpk, order)
+        revealed_row = {**asdict(game), 'revealed_at': datetime.now(timezone.utc).isoformat()}
         for i, row in enumerate(base["rows"]):
             if (not row.get("key") or row["key"] == key) and (
                 row["humble_url"], row["game_title"], row["platform"]
             ) == (
                 game.humble_url, game.game_title, game.platform,
             ):
-                base["rows"][i] = asdict(game)
+                base["rows"][i] = revealed_row
                 break
         else:
-            base["rows"].append(asdict(game))
+            base["rows"].append(revealed_row)
         inventory.publish(base)
         cache.invalidate(order["gamekey"])
 

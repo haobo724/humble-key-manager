@@ -62,6 +62,8 @@ steam-storage-state.json
 inventory.json
 steam.json
 hb-activations.json
+key-availability.json
+data-dir.local.txt
 operation-report.json
 months-cache/
 .humble-bundle-keys/

@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import secrets
+import socket
 import threading
 import webbrowser
 from datetime import datetime, timezone
@@ -20,10 +21,11 @@ from playwright.sync_api import sync_playwright
 
 from humble_bundle_keys.async_inventory import ReadOnlyScanner
 from humble_bundle_keys.auth import AuthOptions, get_authenticated_context
+from humble_bundle_keys.availability import BLOCKED, REASONS, AvailabilityState
 from humble_bundle_keys.browser_choice import derive_membership_slug
 from humble_bundle_keys.choice_policy import choice_policy, upgrade_membership
 from humble_bundle_keys.deadlines import annotate_rows
-from humble_bundle_keys.hb_activation import HBActivationState, identify_account
+from humble_bundle_keys.hb_activation import HBActivationState, read_account
 from humble_bundle_keys.month_claim import claim_months, month_slug, preview_months
 from humble_bundle_keys.operation_report import OperationReport
 from humble_bundle_keys.reveal import preview_reveal, reveal_all
@@ -135,6 +137,7 @@ class Inventory:
         self.report = OperationReport.load(directory / "operation-report.json")
         self.steam = SteamState(directory)
         self.hb_activation = HBActivationState(directory)
+        self.availability = AvailabilityState(directory)
         handler = RotatingFileHandler(directory / "scan.log", maxBytes=2_000_000,
                                       backupCount=2, encoding="utf-8", delay=True)
         handler.setFormatter(logging.Formatter("%(message)s"))
@@ -172,9 +175,22 @@ class Inventory:
         with self.lock:
             self.logs.append(entry)
             self.logs = self.logs[-500:]
+            account = self.hb_activation.data["current_account"]
+            if event == "month_claim_skipped" and fields.get("reason") in REASONS:
+                self.availability.record(account, fields["month"], fields["game"],
+                                         fields["reason"], time=entry["time"])
+                self.revision += 1
+            elif event in {"month_key_revealed", "month_key_recovered"}:
+                self.availability.record(account, fields["month"], fields["game"], None)
 
     def publish(self, result):
         with self.lock:
+            reveal_times = {row['key']: row['revealed_at']
+                            for row in self.snapshot['rows']
+                            if row.get('key') and row.get('revealed_at')}
+            for row in result['rows']:
+                if row.get('key') in reveal_times:
+                    row['revealed_at'] = reveal_times[row['key']]
             for month in result["memberships"]:
                 upgrade_membership(month)
             result["rows"] = annotate_rows(reconcile_rows(result["rows"], result["memberships"]))
@@ -187,15 +203,19 @@ class Inventory:
 
     def view(self):
         with self.lock:
-            return {**self.snapshot, "rows": self.hb_activation.annotate(
-                        self.steam.annotate(self.snapshot["rows"])),
+            snapshot = self.availability.annotate(
+                self.snapshot, self.hb_activation.data["current_account"])
+            return {**snapshot, "rows": self.hb_activation.annotate(
+                        self.steam.annotate(snapshot["rows"])),
                     "steam": self.steam.summary(), "busy": self.busy,
+                    "humble_account": self.hb_activation.data["account_labels"].get(
+                        self.hb_activation.data["current_account"]),
                     "month_preview": self.month_plan,
                     "operation_report": self.report.view() if self.report else None,
                     "message": self.message, "error": self.error, "revision": self.revision,
                     "action": self.action}
 
-    def bind_humble(self, identity):
+    def bind_humble(self, identity, email=None):
         with self.lock:
             previous = self.hb_activation.data["current_account"]
             if previous and previous != identity:
@@ -203,7 +223,7 @@ class Inventory:
                                  "warnings": []}
                 self.activation_plan = self.month_plan = None
                 self.publish(self.snapshot)
-            self.hb_activation.bind(identity, self.snapshot["rows"], self.steam)
+            self.hb_activation.bind(identity, self.snapshot["rows"], self.steam, email=email)
             self.revision += 1
 
     def mark_hb_activation(self, row, steamid):
@@ -286,6 +306,13 @@ class Inventory:
                     raise ValueError("只有无限额月份可以领取全部游戏。")
                 titles = (list(m["unclaimed_titles"]) if request.get("all_games") is True
                           else list(request["titles"]))
+                marks = self.availability.games(
+                    self.hb_activation.data["current_account"], m["url"])
+                blocked = {title for title, mark in marks.items() if mark["status"] in BLOCKED}
+                if request.get("all_games") is True:
+                    titles = [title for title in titles if title not in blocked]
+                elif blocked.intersection(titles):
+                    raise ValueError("所选游戏包含已过期或需关联账号领取的项目，请取消勾选。")
                 if not titles and request.get("all_games") is True:
                     continue
                 remaining = m.get("choices_remaining") if policy == "limited" else None
@@ -330,10 +357,12 @@ class Inventory:
                             storage_state_path=self.directory / "storage_state.json",
                             headless=True, browser_channel=available_browser_channel()))
                         try:
-                            identity = identify_account(hb_context)
+                            account = read_account(hb_context)
+                            identity = account["identity"]
                             if identity != self.action_options["humble_account"]:
-                                self.bind_humble(identity)
+                                self.bind_humble(identity, account["email"])
                                 raise ValueError("Humble 账号与预览不同，请重新扫描并预览。")
+                            self.bind_humble(identity, account["email"])
                         finally:
                             hb_browser.close()
                     self.run_steam(pw, action)
@@ -344,7 +373,8 @@ class Inventory:
                     browser_channel=available_browser_channel(),
                 ))
                 try:
-                    self.bind_humble(identify_account(context))
+                    account = read_account(context)
+                    self.bind_humble(account["identity"], account["email"])
                     if action == "login":
                         self.update("登录成功，现在可以扫描账户。")
                         return
@@ -564,13 +594,23 @@ def make_handler(inventory: Inventory, token: str):
     return Handler
 
 
+class LocalWebServer(ThreadingHTTPServer):
+    allow_reuse_address = False
+
+    def server_bind(self):
+        # Windows otherwise permits multiple servers to bind the same address.
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Humble 本地 Key 管理界面")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--data-dir", type=Path, default=DATA_DIR)
     parser.add_argument("--no-open", action="store_true")
     args = parser.parse_args()
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(
+    server = LocalWebServer(("127.0.0.1", args.port), make_handler(
         Inventory(args.data_dir), secrets.token_urlsafe(32)))
     url = f"http://127.0.0.1:{server.server_port}"
     print(f"Humble 管理界面：{url}\n按 Ctrl+C 关闭。", flush=True)

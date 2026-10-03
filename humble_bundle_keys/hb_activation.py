@@ -7,7 +7,7 @@ from humble_bundle_keys.auth import KEYS_URL
 from humble_bundle_keys.steam import atomic_json, key_digest, utc_now
 
 
-def identify_account(context):
+def read_account(context):
     page = context.new_page()
     try:
         page.goto(KEYS_URL, wait_until="domcontentloaded", timeout=30_000)
@@ -16,23 +16,31 @@ def identify_account(context):
         email = re.search(r"[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+", page.title())
         if not email:
             raise ValueError("无法识别 Humble 账号，请重新登录。")
-        return hashlib.sha256(email.group().strip().lower().encode()).hexdigest()
+        address = email.group().strip().lower()
+        return {"identity": hashlib.sha256(address.encode()).hexdigest(), "email": address}
     finally:
         page.close()
+
+
+def identify_account(context):
+    return read_account(context)["identity"]
 
 
 class HBActivationState:
     def __init__(self, directory):
         self.path = directory / "hb-activations.json"
-        self.data = {"current_account": None, "accounts": {}, "legacy_imported_account": None}
+        self.data = {"current_account": None, "accounts": {}, "legacy_imported_account": None,
+                     "account_labels": {}}
         if self.path.exists():
             try:
                 self.data.update(json.loads(self.path.read_text(encoding="utf-8")))
             except (OSError, ValueError):
                 pass
 
-    def bind(self, identity, rows, steam):
+    def bind(self, identity, rows, steam, email=None):
         self.data["current_account"] = identity
+        if email:
+            self.data["account_labels"][identity] = {"email": email, "verified_at": utc_now()}
         marks = self.data["accounts"].setdefault(identity, {})
         # Legacy receipts are only attached to keys present in this account's inventory.
         for row in rows:

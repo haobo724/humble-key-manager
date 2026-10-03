@@ -4,12 +4,14 @@ import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
+from datetime import datetime, timezone
 
 from playwright.sync_api import sync_playwright
 
 from humble_bundle_keys._orders_cache import OrderCache
 from humble_bundle_keys.api import ORDER_DETAIL_URL, ORDERS_LIST_URL, _extract_tpk
 from humble_bundle_keys.async_inventory import order_tpks
+from humble_bundle_keys.availability import BLOCKED
 from humble_bundle_keys.browser_choice import (
     SEL,
     BrowserChoiceClaimer,
@@ -219,6 +221,7 @@ def save_modal_key(inventory, order, title, key):
         tpk = next((t for t in order_tpks(order) if t.get("human_name") == title),
                    {"human_name": title, "key_type": "unknown"})
         row = asdict(_extract_tpk({**tpk, "redeemed_key_val": key}, order))
+        row['revealed_at'] = datetime.now(timezone.utc).isoformat()
         existing = next((i for i, r in enumerate(snapshot["rows"])
                          if r["game_title"] == title and r["humble_url"] == row["humble_url"]
                          and (not r.get("key") or r["key"] == key)), None)
@@ -241,6 +244,19 @@ def _claim_serial(context, inventory, targets):
     try:
         for target in targets:
             url, titles = target["url"], target["titles"]
+            marks = inventory.availability.games(
+                inventory.hb_activation.data["current_account"], url)
+            available_titles = []
+            for title in titles:
+                mark = marks.get(title)
+                if mark and mark["status"] in BLOCKED:
+                    inventory.report_item(work_id(url, title), title, target["bundle_name"],
+                                          "skipped", mark["reason"])
+                else:
+                    available_titles.append(title)
+            titles = available_titles
+            if not titles:
+                continue
             if inventory.stop_event.is_set():
                 inventory.update("月包领取已停止；已取得的 Key 和额度进度已保存。")
                 return
