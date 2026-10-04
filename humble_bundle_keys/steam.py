@@ -170,7 +170,9 @@ def activation_candidates(rows, selected_ids, steam):
             continue
         key = row.get("key", "").strip()
         reason = None
-        if row.get("platform") != "steam" or not key:
+        if row.get("activation_excluded"):
+            reason = "自定义标签：已排除批量激活"
+        elif row.get("platform") != "steam" or not key:
             reason = "非 Steam Key 或尚未刮取"
         elif row.get("deadline_state") == "expired":
             reason = "已过期"

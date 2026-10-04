@@ -27,6 +27,7 @@ from humble_bundle_keys.browser_choice import derive_membership_slug
 from humble_bundle_keys.choice_policy import choice_policy, upgrade_membership
 from humble_bundle_keys.deadlines import annotate_rows
 from humble_bundle_keys.hb_activation import HBActivationState, read_account
+from humble_bundle_keys.key_tags import KeyTags
 from humble_bundle_keys.month_claim import claim_months, month_slug, preview_months
 from humble_bundle_keys.operation_report import OperationReport
 from humble_bundle_keys.reveal import preview_reveal, reveal_all
@@ -142,6 +143,7 @@ class Inventory:
         self.steam = SteamState(directory)
         self.hb_activation = HBActivationState(directory)
         self.availability = AvailabilityState(directory)
+        self.key_tags = KeyTags(directory)
         handler = RotatingFileHandler(directory / "scan.log", maxBytes=2_000_000,
                                       backupCount=2, encoding="utf-8", delay=True)
         handler.setFormatter(logging.Formatter("%(message)s"))
@@ -211,7 +213,7 @@ class Inventory:
             snapshot = self.availability.annotate(
                 self.snapshot, self.hb_activation.data["current_account"])
             return {**snapshot, "rows": self.hb_activation.annotate(
-                        self.steam.annotate(snapshot["rows"])),
+                        self.steam.annotate(self.tagged_rows(snapshot["rows"]))),
                     "steam": self.steam.summary(), "busy": self.busy,
                     "humble_account": self.hb_activation.data["account_labels"].get(
                         self.hb_activation.data["current_account"]),
@@ -219,6 +221,25 @@ class Inventory:
                     "operation_report": self.report.view() if self.report else None,
                     "message": self.message, "error": self.error, "revision": self.revision,
                     "action": self.action}
+
+    def tagged_rows(self, rows=None):
+        return self.key_tags.annotate(self.snapshot["rows"] if rows is None else rows,
+                                      self.hb_activation.data["current_account"])
+
+    def set_tags(self, ids, tags, excluded, revision):
+        with self.lock:
+            if self.busy or type(revision) is not int or revision != self.revision:
+                raise ValueError("操作正在执行或列表已变化，请刷新后重试。")
+            if (not isinstance(ids, list) or not 0 < len(ids) <= 2000
+                    or any(not isinstance(i, str) for i in ids)):
+                raise ValueError("请选择需要标记的记录。")
+            rows = {row_id(r): r for r in self.snapshot["rows"]}
+            if set(ids) - rows.keys():
+                raise ValueError("选择记录已变化，请刷新后重试。")
+            self.key_tags.set(self.hb_activation.data["current_account"],
+                              [rows[i] for i in ids], tags, excluded)
+            self.activation_plan = None
+            self.revision += 1
 
     def bind_humble(self, identity, email=None):
         with self.lock:
@@ -285,7 +306,7 @@ class Inventory:
             if self.busy:
                 raise ValueError("已有操作正在执行，请结束后再预览。")
             candidates, skipped = activation_candidates(
-                self.snapshot["rows"], selected_ids, self.steam)
+                self.tagged_rows(), selected_ids, self.steam)
             self.activation_plan = {"id": secrets.token_urlsafe(24), "revision": self.revision,
                                     "humble_account": self.hb_activation.data["current_account"],
                                     "steamid": self.steam.account()["steamid"],
@@ -435,7 +456,7 @@ class Inventory:
             sync_library(page, self.steam)
             self.touch()
             if action == "activate":
-                activate_batch(page, context, self.steam, self.snapshot["rows"],
+                activate_batch(page, context, self.steam, self.tagged_rows(),
                                self.action_options["selected_ids"], self)
                 # Refresh the server's owned apps after confirmed mutations; keep per-key receipts.
                 try:
@@ -511,6 +532,17 @@ def make_handler(inventory: Inventory, token: str):
             if (not self.local_host() or self.headers.get("X-Local-Token") != token
                     or (origin and origin != expected)):
                 return self.reply({"error": "Forbidden"}, 403)
+            if self.path == "/api/tags":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 100_000:
+                        raise ValueError("标签请求过大。")
+                    body = json.loads(self.rfile.read(length))
+                    inventory.set_tags(body["selected_ids"], body["tags"],
+                                       body["exclude_activation"], body["revision"])
+                    return self.reply({"saved": True})
+                except (ValueError, KeyError, TypeError) as exc:
+                    return self.reply({"error": str(exc)}, 400)
             actions = {"/api/login": "login", "/api/scan": "scan",
                        "/api/full-scan": "full-scan", "/api/reveal": "reveal",
                        "/api/steam-login": "steam-login", "/api/steam-sync": "steam-sync",
