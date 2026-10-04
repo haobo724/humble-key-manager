@@ -45,7 +45,8 @@ HTML_PATH = Path(__file__).with_name("web_ui.html")
 
 
 def available_browser_channel() -> str | None:
-    if getattr(sys, "frozen", False):
+    if (getattr(sys, "frozen", False)
+            and not Path(__file__).with_name("edge-mode").is_file()):
         return None  # The Windows release includes its own Chromium.
     edge = Path("C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe")
     edge64 = Path("C:/Program Files/Microsoft/Edge/Application/msedge.exe")

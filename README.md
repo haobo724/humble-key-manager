@@ -35,6 +35,9 @@ Windows 可以直接下载 [Release](https://github.com/haobo724/humble-key-mana
 已附带 Python 运行环境和 Chromium；浏览器会自动打开界面，运行期间保留控制台窗口。
 关闭控制台或按 Ctrl+C 退出。
 
+电脑已安装 Microsoft Edge 的话，可以下载文件名带 `-edge.zip` 的轻量版，
+不附带 Chromium，登录和扫描使用本机 Edge 的独立会话。两版共用下面的数据目录。
+
 EXE 版把登录状态、扫描记录和操作结果保存在 `%LOCALAPPDATA%\HumbleKeyManager\data`，
 下次打开会自动读取，更新程序也不会覆盖这些数据。源码版仍使用项目里的
 `.humble-bundle-keys/web/`。迁移时先退出程序，再将该目录内的文件复制到 EXE 的数据目录。
@@ -51,6 +54,7 @@ cd humble-key-manager
 
 在 Windows 本地打包：运行 `build-windows.ps1`，生成的运行包在 `dist/`。
 打包依赖通过 uv 安装；第一次需要下载 Chromium。
+轻量版运行 `build-windows.ps1 -Edge`，无需下载 Chromium。
 
 ## 本地 Web 管理界面（新增）
 
