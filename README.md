@@ -6,6 +6,29 @@
 索性做个可视化界面，把没领的游戏、没刮的 Key 和 Steam 库放在一起管理。
 目前只支持 Humble Bundle，暂时也没打算接别的平台——毕竟我自己没买过别家的慈善包。
 
+## Windows 双击运行
+
+去 [Release](https://github.com/haobo724/humble-key-manager/releases/latest) 下载运行包：
+
+| 版本 | 大小 | 怎么选 |
+| --- | --- | --- |
+| Edge 轻量版（`-edge.zip`） | 约 48 MB | 电脑已安装 Microsoft Edge，推荐这个 |
+| 完整版（`windows-x64.zip`） | 约 360 MB | 自带 Chromium，不用另装浏览器 |
+
+1. **解压整个压缩包**，保留 EXE 旁边的 `_internal` 文件夹。
+2. 双击 `HumbleKeyManager.exe`，浏览器会自动打开管理界面。
+3. 点击「登录 / 更换账户」，登录 Humble 后扫描，就可以整理和刮取了。
+
+两版都不需要安装 Python 或 uv。运行时保留控制台窗口，关闭窗口或按 Ctrl+C 退出。
+登录和扫描使用独立浏览器会话，不读取你平时 Edge 的浏览记录。
+界面顶部「项目主页」可以回到本仓库。
+
+数据保存在 `%LOCALAPPDATA%\HumbleKeyManager\data`，下次打开会自动读取之前的
+登录状态、扫描记录和操作结果。两版共用这个目录，更新或换版本时保留它即可。
+发布包里没有账户数据。
+
+从源码版迁移：先退出程序，把项目中 `.humble-bundle-keys/web/` 内的文件复制到上述目录。
+
 ## 界面预览
 
 游戏列表、刮取进度和结果汇总：
@@ -28,49 +51,28 @@
 本仓库为独立发布版，新增本地 Web UI、Steam 集成、月包并行处理及持久化操作汇总。
 与 Humble Bundle、Valve / Steam、Epic Games 无隶属或官方合作关系。
 
-## 安装
-
-Windows 可以直接下载 [Release](https://github.com/haobo724/humble-key-manager/releases/latest)
-里的 `windows-x64.zip`，解压整个文件夹后双击 `HumbleKeyManager.exe`。
-已附带 Python 运行环境和 Chromium；浏览器会自动打开界面，运行期间保留控制台窗口。
-关闭控制台或按 Ctrl+C 退出。
-
-电脑已安装 Microsoft Edge 的话，可以下载文件名带 `-edge.zip` 的轻量版，
-不附带 Chromium，登录和扫描使用本机 Edge 的独立会话。两版共用下面的数据目录。
-
-EXE 版把登录状态、扫描记录和操作结果保存在 `%LOCALAPPDATA%\HumbleKeyManager\data`，
-下次打开会自动读取，更新程序也不会覆盖这些数据。源码版仍使用项目里的
-`.humble-bundle-keys/web/`。迁移时先退出程序，再将该目录内的文件复制到 EXE 的数据目录。
-发布包不包含账户数据。界面顶部「项目主页」可以回到本仓库。
-
-### 从源码运行
+## 从源码运行
 
 需要 Python 3.10+ 和 uv。Windows 优先使用已安装的 Microsoft Edge；其他系统使用 Playwright Chromium。
 
 ```powershell
 git clone https://github.com/haobo724/humble-key-manager.git
 cd humble-key-manager
+uv sync
+uv run playwright install chromium
+uv run humble-bundle-keys-web
 ```
+
+Windows 也可以双击 `start-web.cmd`（需要先安装 uv）。源码版的数据保存在项目里的
+`.humble-bundle-keys/web/`，与 EXE 版的默认目录不同。
 
 在 Windows 本地打包：运行 `build-windows.ps1`，生成的运行包在 `dist/`。
 打包依赖通过 uv 安装；第一次需要下载 Chromium。
 轻量版运行 `build-windows.ps1 -Edge`，无需下载 Chromium。
 
-## 本地 Web 管理界面（新增）
+## 界面功能
 
-在仓库目录运行：
-
-```powershell
-uv sync --extra dev
-uv run playwright install chromium
-uv run humble-bundle-keys-web
-```
-
-Windows 可以双击 `start-web.cmd`，首次运行会通过 uv 安装 Python 依赖（需要先安装 uv）。
-也可运行 `start-web.ps1`。默认打开 http://127.0.0.1:8765 。点击「登录 / 更换账户」
-在 Humble 官网登录，然后点击「扫描账户」。扫描也会在缺少有效会话时自动打开登录窗口。
-Windows 上优先使用已安装的 Microsoft Edge 打开登录和扫描窗口；没有 Edge 时使用
-Playwright Chromium。窗口使用独立会话，不读取你平时 Edge 的浏览记录。
+默认地址是 http://127.0.0.1:8765 。扫描缺少有效会话时会自动打开登录窗口。
 
 - 已刮取：存在 Key 文本；不代表已在 Steam 激活。
 - 未刮取：订单已有记录，但没有 Key 文本。
