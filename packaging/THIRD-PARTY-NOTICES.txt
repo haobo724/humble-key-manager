@@ -1,0 +1,12 @@
+Humble Key Manager includes third-party runtime components:
+
+Python: PSF license; see PYTHON-LICENSE.txt.
+Playwright: Apache License 2.0; see _internal/playwright/driver/package/LICENSE.
+Node.js: see _internal/playwright/driver/LICENSE for bundled licenses.
+Chromium: BSD and third-party licenses; see the LICENSE files in
+_internal/playwright/driver/package/.local-browsers/.
+
+The application is based on gfargo/humble-bundle-keys by Griffen Fargo,
+licensed under MIT. See LICENSE.txt.
+Project: https://github.com/haobo724/humble-key-manager
+Upstream: https://github.com/gfargo/humble-bundle-keys

@@ -11,7 +11,7 @@ from playwright.sync_api import sync_playwright
 from humble_bundle_keys._orders_cache import OrderCache
 from humble_bundle_keys.api import ORDER_DETAIL_URL, ORDERS_LIST_URL, _extract_tpk
 from humble_bundle_keys.async_inventory import order_tpks
-from humble_bundle_keys.availability import BLOCKED
+from humble_bundle_keys.availability import BLOCKED, REASONS
 from humble_bundle_keys.browser_choice import (
     SEL,
     BrowserChoiceClaimer,
@@ -20,6 +20,7 @@ from humble_bundle_keys.browser_choice import (
     derive_membership_slug,
 )
 from humble_bundle_keys.choice_policy import choice_policy
+from humble_bundle_keys.modern_api import ModernChoiceAPI
 from humble_bundle_keys.operation_report import work_id
 
 
@@ -118,7 +119,10 @@ def read_cards(page, url):
     page.locator(SEL["card"]).first.wait_for(state="attached", timeout=12_000)
     cards = page.locator(SEL["card"]).evaluate_all("""elements => elements.map(e => ({
         title:(e.querySelector('.content-choice-title, .content-title')?.textContent||'').trim(),
-        claimed:e.classList.contains('claimed')
+        claimed:e.classList.contains('claimed'),
+        identifier:(()=>{const name=e.querySelector('[data-machine-name]')?.dataset.machineName;
+            return name&&e.querySelector('[id="choice-'+name+'"]')?name:null})(),
+        platform:e.querySelector('.hb-steam')?'steam':null
     }))""")
     if not cards or any(not card["title"] for card in cards):
         raise ValueError("月包游戏卡片无法识别，未执行领取。")
@@ -215,13 +219,14 @@ def refresh_month(context, inventory, order, url, page):
     return fresh, cards
 
 
-def save_modal_key(inventory, order, title, key):
+def save_modal_key(inventory, order, title, key, record_time=True):
     with inventory.lock:
         snapshot = copy.deepcopy(inventory.snapshot)
         tpk = next((t for t in order_tpks(order) if t.get("human_name") == title),
                    {"human_name": title, "key_type": "unknown"})
         row = asdict(_extract_tpk({**tpk, "redeemed_key_val": key}, order))
-        row['revealed_at'] = datetime.now(timezone.utc).isoformat()
+        if record_time:
+            row['revealed_at'] = datetime.now(timezone.utc).isoformat()
         existing = next((i for i, r in enumerate(snapshot["rows"])
                          if r["game_title"] == title and r["humble_url"] == row["humble_url"]
                          and (not r.get("key") or r["key"] == key)), None)
@@ -240,6 +245,7 @@ def _claim_serial(context, inventory, targets):
     """Only the frozen, confirmed titles may consume quota; never automatically retry a failure."""
     page = context.new_page()
     claimer = BrowserChoiceClaimer(context, BrowserClaimOptions(polite_delay_s=3))
+    api = ModernChoiceAPI(context, page, get_json)
     succeeded = 0
     try:
         for target in targets:
@@ -263,11 +269,15 @@ def _claim_serial(context, inventory, targets):
             inventory.report_phase("核对当前月份", bundle=target["bundle_name"])
             orders = find_orders(context, inventory.directory, [url])
             order = orders[month_slug(url)]
+            modern_cards = None
             for position, title in enumerate(titles):
                 if inventory.stop_event.is_set():
                     inventory.update("月包领取已停止；已取得的 Key 和额度进度已保存。")
                     return
-                order, cards = refresh_month(context, inventory, order, url, page)
+                if target["choice_policy"] != "all_games" or modern_cards is None:
+                    order, cards = refresh_month(context, inventory, order, url, page)
+                else:
+                    cards = modern_cards
                 policy = choice_policy(order.get("product") or {}, url)
                 if (policy != target["choice_policy"] or
                         (position == 0 and policy == "limited" and
@@ -279,6 +289,52 @@ def _claim_serial(context, inventory, targets):
                 inventory.update(f"领取并刮取：{target['bundle_name']} · {title}")
                 identity = work_id(url, title)
                 inventory.report_phase("领取并刮取", title, target["bundle_name"])
+                if policy == "all_games":
+                    inventory.report_phase("API 领取并刮取", title, target["bundle_name"])
+                    result = api.claim(order, cards[index], url)
+                    order = result.order
+                    if result.status == "success":
+                        save_modal_key(inventory, order, title, result.key,
+                                       record_time=result.revealed)
+                        succeeded += 1
+                        cards[index]["claimed"] = True
+                        modern_cards = cards
+                        with inventory.lock:
+                            snapshot = copy.deepcopy(inventory.snapshot)
+                            month = next(m for m in snapshot["memberships"] if m["url"] == url)
+                            month["unclaimed_titles"] = [t for t in month["unclaimed_titles"]
+                                                         if t != title]
+                            month["claimed_games"] = sum(c["claimed"] for c in cards)
+                            month["state"] = "pending" if month["unclaimed_titles"] else "complete"
+                            inventory.publish(snapshot)
+                        cache = OrderCache(inventory.directory / "orders-cache")
+                        cache.put(order["gamekey"], order)
+                        OrderCache(inventory.directory / "months-cache").invalidate(month_slug(url))
+                        inventory.report_item(identity, title, target["bundle_name"], "success")
+                        event = "month_key_revealed" if result.revealed else "month_key_recovered"
+                        inventory.log(event,
+                                      month=month_slug(url), game=title, source="choice_api")
+                        if inventory.stop_event.wait(3):
+                            return
+                        continue
+                    if result.status in {"expired", "key_temporarily_exhausted"}:
+                        inventory.log("month_claim_skipped", month=month_slug(url), game=title,
+                                      reason=result.status, source="choice_api")
+                        inventory.report_item(identity, title, target["bundle_name"], "skipped",
+                                              REASONS[result.status])
+                        modern_cards = cards
+                        continue
+                    if result.status == "uncertain":
+                        order, _ = refresh_month(context, inventory, order, url, page)
+                        inventory.report_item(identity, title, target["bundle_name"], "failed",
+                                              "API 领取结果不确定；已只读核查，未重复领取")
+                        inventory.log("month_claim_stopped", month=month_slug(url), game=title,
+                                      reason="api_result_uncertain")
+                        inventory.update("API 领取结果不确定，已停止；请核查原页面。")
+                        return False
+                    inventory.log("month_api_fallback", month=month_slug(url), game=title,
+                                  reason="missing_parameters_or_unsupported_platform")
+                    inventory.report_phase("页面领取并刮取", title, target["bundle_name"])
                 attempt = BrowserClaimAttempt(slug=month_slug(url), title=title)
                 failure_type = ""
                 try:
@@ -300,6 +356,7 @@ def _claim_serial(context, inventory, targets):
                     inventory.log("month_key_revealed", month=month_slug(url), game=title)
                 # A timeout may have consumed a slot: refresh and stop, never continue blind.
                 order, fresh_cards = refresh_month(context, inventory, order, url, page)
+                modern_cards = fresh_cards if policy == "all_games" else None
                 if not attempt.key:
                     # Recover an already returned key without submitting another claim.
                     recovered = next((t.get("redeemed_key_val") for t in order_tpks(order)

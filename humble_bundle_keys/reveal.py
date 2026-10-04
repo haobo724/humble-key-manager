@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from humble_bundle_keys._orders_cache import OrderCache
 from humble_bundle_keys.api import ApiOptions, ApiScraper, _extract_tpk
 from humble_bundle_keys.async_inventory import order_tpks
+from humble_bundle_keys.availability import REASONS
 from humble_bundle_keys.browser_choice import (
     SEL,
     BrowserChoiceClaimer,
@@ -17,6 +18,7 @@ from humble_bundle_keys.browser_choice import (
 from humble_bundle_keys.choice import categorize_keytype
 from humble_bundle_keys.choice_policy import choice_policy
 from humble_bundle_keys.deadlines import deadline_info
+from humble_bundle_keys.modern_api import ModernChoiceAPI, read_card_metadata
 from humble_bundle_keys.operation_report import work_id
 from humble_bundle_keys.steam import row_id
 
@@ -111,10 +113,12 @@ def reveal_all(context, inventory, selected_ids=None):
                     continue
                 inventory.report_item(work_id(order["gamekey"], title, "steam"), title, bundle)
 
-    def save_key(order, tpk, key):
+    def save_key(order, tpk, key, record_time=True):
         tpk["redeemed_key_val"] = key
         game = _extract_tpk(tpk, order)
-        revealed_row = {**asdict(game), 'revealed_at': datetime.now(timezone.utc).isoformat()}
+        revealed_row = asdict(game)
+        if record_time:
+            revealed_row['revealed_at'] = datetime.now(timezone.utc).isoformat()
         for i, row in enumerate(base["rows"]):
             if (not row.get("key") or row["key"] == key) and (
                 row["humble_url"], row["game_title"], row["platform"]
@@ -184,6 +188,9 @@ def reveal_all(context, inventory, selected_ids=None):
                 continue
             page = context.new_page()
             claimer = BrowserChoiceClaimer(context, BrowserClaimOptions(polite_delay_s=3))
+            from humble_bundle_keys.month_claim import get_json
+
+            modern_api = ModernChoiceAPI(context, page, get_json)
             logger = logging.getLogger("humble_bundle_keys.browser_choice")
             previous_disabled = logger.disabled
             logger.disabled = True  # upstream INFO logs may include raw keys
@@ -212,6 +219,37 @@ def reveal_all(context, inventory, selected_ids=None):
                     inventory.update(f"正在领取并刮取：{title} · 已成功 {succeeded}")
                     inventory.report_item(identity, title, product.get("human_name", ""))
                     inventory.report_phase("领取并刮取", title, product.get("human_name", ""))
+                    inventory.report_phase("API 领取并刮取", title, product.get("human_name", ""))
+                    result = modern_api.claim(order, {"title": title,
+                                                      **read_card_metadata(card)}, page.url)
+                    order = result.order
+                    if result.status == "success":
+                        matching = next(t for t in order_tpks(order)
+                                        if t.get("human_name") == title and
+                                        t.get("redeemed_key_val") == result.key)
+                        save_key(order, matching, result.key, record_time=result.revealed)
+                        succeeded += 1
+                        inventory.report_item(identity, title, product.get("human_name", ""),
+                                              "success")
+                        inventory.log("choice_key_revealed", month=slug, game=title,
+                                      source="choice_api")
+                        if inventory.stop_event.wait(3):
+                            return
+                        continue
+                    if result.status in {"expired", "key_temporarily_exhausted"}:
+                        inventory.report_item(identity, title, product.get("human_name", ""),
+                                              "skipped", REASONS[result.status])
+                        inventory.log("choice_reveal_skipped", month=slug, game=title,
+                                      reason=result.status, source="choice_api")
+                        continue
+                    if result.status == "uncertain":
+                        inventory.report_item(identity, title, product.get("human_name", ""),
+                                              "failed", "API 领取结果不确定；未重复领取")
+                        inventory.report_issue("API 领取结果不确定，已停止，请核查原页面。")
+                        return
+                    inventory.log("month_api_fallback", month=slug, game=title,
+                                  reason="missing_parameters_or_unsupported_platform")
+                    inventory.report_phase("页面领取并刮取", title, product.get("human_name", ""))
                     attempt = BrowserClaimAttempt(slug=slug, title=title)
                     claimer._claim_single_card(page, index, attempt)
                     if attempt.key:

@@ -1,0 +1,15 @@
+Humble Key Manager v0.1.0
+
+解压整个压缩包，双击 HumbleKeyManager.exe，浏览器会自动打开管理界面。
+无需安装 Python、uv 或浏览器依赖。登录窗口使用附带的 Chromium。
+运行期间保留控制台窗口，关闭窗口或按 Ctrl+C 即可退出。
+请不要同时启动源码版与 EXE 版（默认端口均为 8765）。
+
+数据保存在 %LOCALAPPDATA%\HumbleKeyManager\data。
+首次使用需要登录；以后启动会读取保存的登录状态、扫描记录和操作结果。
+如从源码版迁移，退出程序后把 .humble-bundle-keys\web 内的文件复制到上述目录。
+此目录包含你的 Key 和登录会话，请自行保管；更新程序时不需要删除它。
+
+项目：https://github.com/haobo724/humble-key-manager
+基于 https://github.com/gfargo/humble-bundle-keys 二次开发。
+原作者 Griffen Fargo；MIT 许可证详见 LICENSE.txt。

@@ -30,12 +30,27 @@
 
 ## 安装
 
+Windows 可以直接下载 [Release](https://github.com/haobo724/humble-key-manager/releases/latest)
+里的 `windows-x64.zip`，解压整个文件夹后双击 `HumbleKeyManager.exe`。
+已附带 Python 运行环境和 Chromium；浏览器会自动打开界面，运行期间保留控制台窗口。
+关闭控制台或按 Ctrl+C 退出。
+
+EXE 版把登录状态、扫描记录和操作结果保存在 `%LOCALAPPDATA%\HumbleKeyManager\data`，
+下次打开会自动读取，更新程序也不会覆盖这些数据。源码版仍使用项目里的
+`.humble-bundle-keys/web/`。迁移时先退出程序，再将该目录内的文件复制到 EXE 的数据目录。
+发布包不包含账户数据。界面顶部「项目主页」可以回到本仓库。
+
+### 从源码运行
+
 需要 Python 3.10+ 和 uv。Windows 优先使用已安装的 Microsoft Edge；其他系统使用 Playwright Chromium。
 
 ```powershell
 git clone https://github.com/haobo724/humble-key-manager.git
 cd humble-key-manager
 ```
+
+在 Windows 本地打包：运行 `build-windows.ps1`，生成的运行包在 `dist/`。
+打包依赖通过 uv 安装；第一次需要下载 Chromium。
 
 ## 本地 Web 管理界面（新增）
 
@@ -82,7 +97,7 @@ Playwright Chromium。窗口使用独立会话，不读取你平时 Edge 的浏�
 Humble 明确提示 Key 暂时缺货时也记为跳过并继续，保留未取得 Key 的记录以便补货后处理。
 
 月包列表增加「全部游戏可领取」「限额 Choice」「待核查」「额度已用完」子分类。
-无限额月份可「刮取本月全部」，也可在该子分类「刮取此分类（当前筛选）」，
+无限额月份可「刮取本月可领取项目」，也可在该子分类「刮取此分类（当前筛选）」，
 预览范围只包括当前筛选出的无限额月份。限额月份逐月勾选游戏，点击「预览并刮取」。
 预览直接依据当前扫描记录展示所选游戏、预计消耗与剩余额度，不连接 Humble 重扫月份。
 确认后逐月核对并立即刮取，不先遍历整份清单；只领取清单里的游戏。
@@ -90,6 +105,10 @@ Humble 明确提示 Key 暂时缺货时也记为跳过并继续，保留未取�
 批量处理无限额月份时最多 2 个月份并行，各用独立浏览器会话；同月内逐个执行。
 限额月份在并行任务完成后串行执行。异常或结果不确定时停止启动后续月份；已保存结果保留。
 每次领取后保存 Key 并更新实际额度；领取失败或结果不确定就停止，不自动重试。
+现代无限额 Choice 的 Steam 游戏优先通过 API 分配权益并刮取 Key，复用月份页面，
+成功时不逐个打开游戏弹窗或重新加载页面。缺少可靠游戏标识或非 Steam 项目保留页面流程。
+旧版限额 Choice 继续逐月勾选、校验额度并在页面领取。
+API 请求结果不确定时只读核查订单；无法确认则停止，不重复提交领取或改用按钮再领一次。
 这不会在 Steam 激活；需要激活时在已刮取列表另行勾选。
 
 ### Steam 库核对与批量操作

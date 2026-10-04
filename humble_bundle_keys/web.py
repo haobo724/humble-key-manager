@@ -8,6 +8,7 @@ import logging
 import re
 import secrets
 import socket
+import sys
 import threading
 import webbrowser
 from datetime import datetime, timezone
@@ -44,6 +45,8 @@ HTML_PATH = Path(__file__).with_name("web_ui.html")
 
 
 def available_browser_channel() -> str | None:
+    if getattr(sys, "frozen", False):
+        return None  # The Windows release includes its own Chromium.
     edge = Path("C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe")
     edge64 = Path("C:/Program Files/Microsoft/Edge/Application/msedge.exe")
     return "msedge" if edge.is_file() or edge64.is_file() else None
@@ -176,11 +179,12 @@ class Inventory:
             self.logs.append(entry)
             self.logs = self.logs[-500:]
             account = self.hb_activation.data["current_account"]
-            if event == "month_claim_skipped" and fields.get("reason") in REASONS:
+            if event in {"month_claim_skipped", "choice_reveal_skipped"} and \
+                    fields.get("reason") in REASONS:
                 self.availability.record(account, fields["month"], fields["game"],
                                          fields["reason"], time=entry["time"])
                 self.revision += 1
-            elif event in {"month_key_revealed", "month_key_recovered"}:
+            elif event in {"month_key_revealed", "month_key_recovered", "choice_key_revealed"}:
                 self.availability.record(account, fields["month"], fields["game"], None)
 
     def publish(self, result):

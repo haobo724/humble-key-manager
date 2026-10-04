@@ -149,6 +149,28 @@ def test_unlimited_plan_freezes_all_game_titles_even_with_zero_old_quota(tmp_pat
     assert "all_games" not in targets[0]  # execution uses frozen titles, never a new wildcard
 
 
+def test_modern_api_success_loads_month_once_and_never_clicks_claim(tmp_path, monkeypatch):
+    from humble_bundle_keys.modern_api import ModernResult
+
+    inv, order, context, claimer, cards, url = fixtures(tmp_path, monkeypatch, modern=True)
+    read_cards = MagicMock(side_effect=lambda *args: copy.deepcopy(cards))
+    monkeypatch.setattr("humble_bundle_keys.month_claim.read_cards", read_cards)
+
+    def api_claim(self, current, card, month_url):
+        current["tpkd_dict"]["all_tpks"].append({"human_name": card["title"],
+            "key_type": "steam", "redeemed_key_val": "SYNTHETIC-" + card["title"]})
+        return ModernResult("success", current, "SYNTHETIC-" + card["title"], True)
+
+    monkeypatch.setattr("humble_bundle_keys.month_claim.ModernChoiceAPI.claim", api_claim)
+    claim_months(context, inv, [{"url": url, "bundle_name": order["product"]["human_name"],
+                              "choice_policy": "all_games", "choices_remaining": None,
+                              "titles": ["A", "B"]}])
+    assert read_cards.call_count == 1
+    claimer._claim_single_card.assert_not_called()
+    assert inv.snapshot["memberships"][0]["unclaimed_titles"] == ["C"]
+    assert all(r.get("revealed_at") for r in inv.snapshot["rows"])
+
+
 def test_uncertain_failure_consumes_at_most_one_slot_and_refreshes_quota(tmp_path, monkeypatch):
     inv, order, context, claimer, cards, url = fixtures(tmp_path, monkeypatch)
     targets = preview_months(context, inv, [{"url": url, "titles": ["A", "B"]}])
