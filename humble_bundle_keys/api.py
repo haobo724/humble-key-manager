@@ -40,6 +40,7 @@ from playwright.sync_api import APIRequestContext, BrowserContext, Page
 from humble_bundle_keys._browser_fetch import post_form_in_browser
 from humble_bundle_keys._orders_cache import OrderCache
 from humble_bundle_keys.models import ExtractStats, GameKey
+from humble_bundle_keys.regions import countries
 from humble_bundle_keys.scraper import PLATFORMS  # reuse the platform normalisation
 
 # Page we keep open as a "browser context anchor" so POSTs can route through
@@ -142,6 +143,8 @@ def _extract_tpk(tpk: dict[str, Any], order: dict[str, Any]) -> GameKey:
         os_support=", ".join(oses),
         humble_url=humble_url,
         steam_app_id=_steam_app_id(tpk) if platform == "steam" else None,
+        exclusive_countries=countries(tpk.get("exclusive_countries")),
+        disallowed_countries=countries(tpk.get("disallowed_countries")),
     )
 
 

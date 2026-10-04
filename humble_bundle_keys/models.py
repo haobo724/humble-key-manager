@@ -24,10 +24,15 @@ class GameKey:
     os_support: str = ""  # comma-separated, e.g. "Windows, macOS"
     humble_url: str = ""  # link to the bundle/order page
     steam_app_id: int | None = None  # exact product metadata; never infer from a similar title
+    exclusive_countries: list[str] | None = None
+    disallowed_countries: list[str] | None = None
 
     def to_row(self) -> dict[str, Any]:
         d = asdict(self)
         d["redeemed_on_humble"] = "true" if self.redeemed_on_humble else "false"
+        # Keep the original CLI CSV format; the web export includes region metadata.
+        d.pop("exclusive_countries")
+        d.pop("disallowed_countries")
         return d
 
 

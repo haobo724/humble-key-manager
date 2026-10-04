@@ -30,11 +30,13 @@ from humble_bundle_keys.hb_activation import HBActivationState, read_account
 from humble_bundle_keys.key_tags import KeyTags
 from humble_bundle_keys.month_claim import claim_months, month_slug, preview_months
 from humble_bundle_keys.operation_report import OperationReport
+from humble_bundle_keys.regions import annotate_regions, hydrate_restrictions
 from humble_bundle_keys.reveal import preview_reveal, reveal_all
 from humble_bundle_keys.steam import (
     SteamState,
     activate_batch,
     activation_candidates,
+    atomic_json,
     hydrate_app_ids,
     row_id,
     steam_context,
@@ -168,6 +170,8 @@ class Inventory:
             except (ValueError, OSError):
                 self.message = "上次记录无法读取，请重新扫描。"
         hydrate_app_ids(self.snapshot["rows"], directory)
+        if hydrate_restrictions(self.snapshot["rows"], directory):
+            atomic_json(directory / "inventory.json", self.snapshot)
 
     def update(self, message: str):
         with self.lock:
@@ -213,7 +217,7 @@ class Inventory:
             snapshot = self.availability.annotate(
                 self.snapshot, self.hb_activation.data["current_account"])
             return {**snapshot, "rows": self.hb_activation.annotate(
-                        self.steam.annotate(self.tagged_rows(snapshot["rows"]))),
+                        self.steam.annotate(annotate_regions(self.tagged_rows(snapshot["rows"])))),
                     "steam": self.steam.summary(), "busy": self.busy,
                     "humble_account": self.hb_activation.data["account_labels"].get(
                         self.hb_activation.data["current_account"]),

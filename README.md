@@ -33,6 +33,12 @@
 筛选、勾选要激活的 Key，预览目标 Steam 账号和清单，确认后批量提交。
 这个我自己还没试过，不过 Codex 给的单元测试是过了。![表情](https://keylol.com/static/image/smiley/steamcn_1/kbc74.gif)
 
+## 这个包的 Key，中国能不能激活？
+
+读取 Humble 订单里的地区限制，单独显示中国可激活、不可激活、未标注锁区和未知。
+可以筛掉明确不支持中国的项目，悬停查看原始地区列表，导出的 CSV 也会带上这些信息。
+判断针对这份订单的 Key，不靠 Steam 商店能不能购买来猜；没有地区信息就保持未知。
+
 ## 导出 CSV，方便出 Key 给别人挑
 
 把当前筛选出的列表导出成 CSV，不用再手抄游戏名。
@@ -68,7 +74,7 @@
 完整解压，保留 `_internal` 文件夹，双击 `HumbleKeyManager.exe`。
 浏览器会自动打开界面，不需要安装 Python 或 uv。运行期间保留控制台窗口，关闭它即可退出。
 
-README 介绍当前源码功能；CSV 开关、标签和缺货分类等新改动尚未打进 v0.1.0 的 EXE。
+README 介绍当前源码功能；CSV 开关、标签、缺货分类和地区限制等新改动尚未打进 v0.1.0 的 EXE。
 
 ## 详细说明
 
@@ -84,3 +90,5 @@ README 介绍当前源码功能；CSV 开关、标签和缺货分类等新改动
 原作者 **Griffen Fargo**，保留 [MIT 许可证](LICENSE)。
 上游基准提交：`4a6d1c4c3c74c63a22129213653f392f948b39e4`。
 本项目独立发布，与 Humble Bundle、Valve / Steam、Epic Games 无官方合作关系。
+地区字段的识别参考 [umaim/Humble-Key-Restriction](https://github.com/umaim/Humble-Key-Restriction)，
+原作者 Cloud，MIT 许可；地区数据直接来自 Humble 订单，不上传 Key 给第三方。
