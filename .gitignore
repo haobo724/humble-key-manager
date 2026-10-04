@@ -63,6 +63,8 @@ inventory.json
 steam.json
 hb-activations.json
 key-tags.json
+itad-settings.json
+itad-prices.json
 key-availability.json
 data-dir.local.txt
 operation-report.json

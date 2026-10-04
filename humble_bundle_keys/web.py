@@ -30,6 +30,7 @@ from humble_bundle_keys.hb_activation import HBActivationState, read_account
 from humble_bundle_keys.key_tags import KeyTags
 from humble_bundle_keys.month_claim import claim_months, month_slug, preview_months
 from humble_bundle_keys.operation_report import OperationReport
+from humble_bundle_keys.prices import PriceStore
 from humble_bundle_keys.regions import annotate_regions, hydrate_restrictions
 from humble_bundle_keys.reveal import preview_reveal, reveal_all
 from humble_bundle_keys.steam import (
@@ -146,6 +147,7 @@ class Inventory:
         self.hb_activation = HBActivationState(directory)
         self.availability = AvailabilityState(directory)
         self.key_tags = KeyTags(directory)
+        self.prices = PriceStore(directory)
         handler = RotatingFileHandler(directory / "scan.log", maxBytes=2_000_000,
                                       backupCount=2, encoding="utf-8", delay=True)
         handler.setFormatter(logging.Formatter("%(message)s"))
@@ -216,8 +218,9 @@ class Inventory:
         with self.lock:
             snapshot = self.availability.annotate(
                 self.snapshot, self.hb_activation.data["current_account"])
-            return {**snapshot, "rows": self.hb_activation.annotate(
-                        self.steam.annotate(annotate_regions(self.tagged_rows(snapshot["rows"])))),
+            return {**snapshot, "rows": self.prices.annotate(self.hb_activation.annotate(
+                        self.steam.annotate(annotate_regions(self.tagged_rows(snapshot["rows"]))))),
+                    "prices": self.prices.summary(),
                     "steam": self.steam.summary(), "busy": self.busy,
                     "humble_account": self.hb_activation.data["account_labels"].get(
                         self.hb_activation.data["current_account"]),
@@ -536,6 +539,24 @@ def make_handler(inventory: Inventory, token: str):
             if (not self.local_host() or self.headers.get("X-Local-Token") != token
                     or (origin and origin != expected)):
                 return self.reply({"error": "Forbidden"}, 403)
+            if self.path in {"/api/prices-config", "/api/prices-refresh"}:
+                try:
+                    if self.path == "/api/prices-config":
+                        length = int(self.headers.get("Content-Length", "0"))
+                        if not 0 < length <= 4096:
+                            raise ValueError("配置请求格式错误。")
+                        body = json.loads(self.rfile.read(length))
+                        inventory.prices.configure(body["api_key"])
+                    else:
+                        with inventory.lock:
+                            ids = [r.get("steam_app_id") for r in inventory.snapshot["rows"]
+                                   if r.get("platform") == "steam"]
+                        inventory.prices.start(ids, inventory.touch)
+                    return self.reply(inventory.prices.summary())
+                except (ValueError, KeyError, TypeError):
+                    # Never echo credential-bearing input or upstream response bodies.
+                    message = "配置或价格请求失败，请检查 API Key、网络或刷新状态。"
+                    return self.reply({"error": message}, 400)
             if self.path == "/api/tags":
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
