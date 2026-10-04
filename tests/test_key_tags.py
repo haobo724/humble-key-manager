@@ -49,3 +49,22 @@ def test_tag_update_invalidates_plan_and_rejects_busy_or_stale_edit(tmp_path):
     inv.busy = True
     with pytest.raises(ValueError):
         inv.set_tags([row_id(row())], [], False, inv.revision)
+
+
+def test_manual_activation_is_owned_without_fabricating_steam_receipt(tmp_path):
+    inv = Inventory(tmp_path)
+    inv.hb_activation.data["current_account"] = "account"
+    inv.snapshot["rows"] = [row()]
+    inv.steam.set_account("76561198000000001", "Demo")
+    inv.steam.set_library([])
+    inv.set_tags([row_id(row())], ["已激活"], False, inv.revision)
+    current = inv.view()["rows"][0]
+    assert current["steam_ownership"] == "owned"
+    assert current["steam_library_ownership"] == "not_owned"
+    assert current["activation_status"] == "manually_activated"
+    assert current["activation_excluded"] and not current["system_activated"]
+    assert inv.steam.result(row()["key"]) is None
+    inv.set_tags([row_id(row())], [], False, inv.revision)
+    current = inv.view()["rows"][0]
+    assert current["steam_ownership"] == "not_owned"
+    assert current["activation_status"] == "unknown"

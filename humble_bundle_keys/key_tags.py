@@ -4,6 +4,7 @@ import json
 from humble_bundle_keys.steam import atomic_json, key_digest, row_id
 
 SOLD_TAGS = {"卖掉了", "已出售", "已卖出", "已赠送"}
+EXCLUDED_TAGS = SOLD_TAGS | {"已激活"}
 
 
 def identities(row):
@@ -43,7 +44,8 @@ class KeyTags:
             mark = marks.get(identity, marks.get(record, {}))
             row["custom_tags"] = list(mark.get("tags", []))
             row["exclude_activation"] = bool(mark.get("exclude_activation"))
+            row["manual_activated"] = "已激活" in row["custom_tags"]
             row["activation_excluded"] = (row["exclude_activation"]
-                                          or bool(SOLD_TAGS.intersection(row["custom_tags"])))
+                                          or bool(EXCLUDED_TAGS.intersection(row["custom_tags"])))
             result.append(row)
         return result

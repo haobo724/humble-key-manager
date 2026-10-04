@@ -148,6 +148,12 @@ class SteamState:
             # Already-owned responses say nothing about whether the particular key was consumed.
             if result and result["status"] in {"activated", "already_owned"}:
                 row["steam_ownership"] = "owned"
+            row["steam_library_ownership"] = row["steam_ownership"]
+            if row.get("manual_activated"):
+                if row.get("platform") == "steam":
+                    row["steam_ownership"] = "owned"
+                if not result:
+                    row["activation_status"] = "manually_activated"
             annotated.append(row)
         return annotated
 
