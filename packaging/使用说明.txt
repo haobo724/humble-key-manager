@@ -1,4 +1,4 @@
-Humble Key Manager v0.1.0
+Humble Key Manager v__VERSION__
 
 解压整个压缩包，双击 HumbleKeyManager.exe，浏览器会自动打开管理界面。
 无需安装 Python、uv 或浏览器依赖。登录窗口使用附带的 Chromium。

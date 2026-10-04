@@ -6,7 +6,9 @@ if ($LASTEXITCODE) { throw 'Dependency installation failed.' }
 $env:PLAYWRIGHT_BROWSERS_PATH = '0'
 $env:HUMBLE_BUILD_EDGE = if ($Edge) { '1' } else { '0' }
 $folderName = if ($Edge) { 'HumbleKeyManager-Edge' } else { 'HumbleKeyManager' }
-$packageName = 'humble-key-manager-v0.1.0-windows-x64' + $(if ($Edge) { '-edge' } else { '' })
+$version = (& uv run --no-sync python -c "from humble_bundle_keys import __version__; print(__version__)").Trim()
+if ($LASTEXITCODE) { throw 'Version lookup failed.' }
+$packageName = "humble-key-manager-v$version-windows-x64" + $(if ($Edge) { '-edge' } else { '' })
 $outputDir = "dist/$folderName"
 if (-not $Edge) {
     & uv run --no-sync playwright install chromium
@@ -18,7 +20,7 @@ if ($LASTEXITCODE) { throw 'Icon conversion failed.' }
 & uv run --no-sync pyinstaller --noconfirm --clean packaging/HumbleKeyManager.spec
 if ($LASTEXITCODE) { throw 'Executable build failed.' }
 Copy-Item -LiteralPath LICENSE -Destination "$outputDir/LICENSE.txt"
-$instructions = Get-Content -LiteralPath packaging/使用说明.txt -Raw -Encoding UTF8
+$instructions = (Get-Content -LiteralPath packaging/使用说明.txt -Raw -Encoding UTF8).Replace('__VERSION__', $version)
 if ($Edge) {
     $instructions = $instructions.Replace('无需安装 Python、uv 或浏览器依赖。登录窗口使用附带的 Chromium。', '无需安装 Python 或 uv；需要本机已安装 Microsoft Edge。登录和扫描使用 Edge 的独立会话。')
 }
