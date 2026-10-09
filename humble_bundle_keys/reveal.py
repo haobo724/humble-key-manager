@@ -18,6 +18,7 @@ from humble_bundle_keys.browser_choice import (
 from humble_bundle_keys.choice import categorize_keytype
 from humble_bundle_keys.choice_policy import choice_policy
 from humble_bundle_keys.deadlines import deadline_info
+from humble_bundle_keys.diagnostics import error_fields
 from humble_bundle_keys.modern_api import ModernChoiceAPI, read_card_metadata
 from humble_bundle_keys.operation_report import work_id
 from humble_bundle_keys.steam import row_id
@@ -168,8 +169,8 @@ def reveal_all(context, inventory, selected_ids=None):
                     failed += 1
                     inventory.report_item(identity, game.game_title, bundle, "failed",
                                           type(exc).__name__)
-                    inventory.log("reveal_failed", game=tpk.get("human_name", ""),
-                                  error_type=type(exc).__name__)
+                    inventory.log("reveal_failed",
+                                  **error_fields(exc, game=game.game_title, bundle=bundle))
                     if "429" in str(exc) or "403" in str(exc):
                         inventory.update("请求受限，已停止刮取；成功的 Key 已保存。")
                         inventory.report_issue("请求受限，提前停止；未处理项目保留。")
@@ -186,6 +187,7 @@ def reveal_all(context, inventory, selected_ids=None):
             slug = derive_membership_slug(product)
             if not slug or not re_safe_slug(slug):
                 continue
+            inventory.report_phase("打开月包", bundle=product.get("human_name", slug))
             page = context.new_page()
             claimer = BrowserChoiceClaimer(context, BrowserClaimOptions(polite_delay_s=3))
             from humble_bundle_keys.month_claim import get_json
@@ -287,7 +289,7 @@ def reveal_all(context, inventory, selected_ids=None):
             except Exception as exc:
                 failed += 1
                 inventory.log("choice_reveal_page_failed", month=slug,
-                              error_type=type(exc).__name__)
+                              **error_fields(exc))
                 inventory.report_issue(f"{product.get('human_name', slug)} 页面处理失败"
                                        f"（{type(exc).__name__}），有项目未完成。")
             finally:

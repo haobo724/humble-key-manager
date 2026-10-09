@@ -1,4 +1,4 @@
-param([switch]$Edge)
+﻿param([switch]$Edge)
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 & uv sync --extra build --extra dev --frozen

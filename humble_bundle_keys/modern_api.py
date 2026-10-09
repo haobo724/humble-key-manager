@@ -2,7 +2,7 @@
 import re
 from dataclasses import dataclass
 
-from humble_bundle_keys.api import ORDER_DETAIL_URL, _normalise_platform
+from humble_bundle_keys.api import ORDER_DETAIL_URL, _normalise_platform, normalise_key
 from humble_bundle_keys.async_inventory import order_tpks
 from humble_bundle_keys.choice import (
     CHOOSECONTENT_URL,
@@ -22,6 +22,9 @@ class ModernResult:
     order: dict
     key: str = ""
     revealed: bool = False
+
+    def __post_init__(self):
+        self.key = normalise_key(self.key)
 
 
 def matching_tpk(order, title):

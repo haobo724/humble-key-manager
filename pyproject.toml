@@ -1,6 +1,6 @@
 [project]
 name = "humble-key-manager"
-version = "0.2.0"
+version = "0.3.0b1"
 description = "Local Humble Bundle key manager with Choice claiming, Steam library matching and explicit activation."
 readme = "README.md"
 license = { text = "MIT" }

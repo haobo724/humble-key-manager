@@ -3,6 +3,7 @@ import copy
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from dataclasses import asdict
 from datetime import datetime, timezone
 
@@ -20,6 +21,7 @@ from humble_bundle_keys.browser_choice import (
     derive_membership_slug,
 )
 from humble_bundle_keys.choice_policy import choice_policy
+from humble_bundle_keys.diagnostics import error_fields, scope
 from humble_bundle_keys.modern_api import ModernChoiceAPI
 from humble_bundle_keys.operation_report import work_id
 
@@ -243,6 +245,8 @@ def save_modal_key(inventory, order, title, key, record_time=True):
 
 def _claim_serial(context, inventory, targets):
     """Only the frozen, confirmed titles may consume quota; never automatically retry a failure."""
+    if targets:
+        inventory.report_phase("打开月包", bundle=targets[0]["bundle_name"])
     page = context.new_page()
     claimer = BrowserChoiceClaimer(context, BrowserClaimOptions(polite_delay_s=3))
     api = ModernChoiceAPI(context, page, get_json)
@@ -271,6 +275,7 @@ def _claim_serial(context, inventory, targets):
             order = orders[month_slug(url)]
             modern_cards = None
             for position, title in enumerate(titles):
+                inventory.report_phase("核对游戏领取状态", title, target["bundle_name"])
                 if inventory.stop_event.is_set():
                     inventory.update("月包领取已停止；已取得的 Key 和额度进度已保存。")
                     return
@@ -341,8 +346,8 @@ def _claim_serial(context, inventory, targets):
                     claimer._claim_single_card(page, index, attempt)
                 except Exception as exc:
                     failure_type = type(exc).__name__
-                    inventory.log("month_claim_error", month=month_slug(url), game=title,
-                                  error_type=type(exc).__name__)
+                    inventory.log("month_claim_error", month=month_slug(url),
+                                  **error_fields(exc, game=title, bundle=target["bundle_name"]))
                 if attempt.error == "epic account linking required":
                     inventory.report_item(identity, title, target["bundle_name"], "skipped",
                                           "需关联 Epic 账号领取，不提供可刮取的 Steam Key")
@@ -421,13 +426,14 @@ def _claim_serial(context, inventory, targets):
 def _claim_worker(storage_state, inventory, target):
     # Playwright sync objects belong to their thread. Never share the parent context.
     from humble_bundle_keys.web import available_browser_channel
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=False, channel=available_browser_channel())
-        try:
-            context = browser.new_context(storage_state=storage_state)
-            return _claim_serial(context, inventory, [target])
-        finally:
-            browser.close()
+    with scope(phase="打开月包", bundle=target["bundle_name"], game=""):
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=False, channel=available_browser_channel())
+            try:
+                context = browser.new_context(storage_state=storage_state)
+                return _claim_serial(context, inventory, [target])
+            finally:
+                browser.close()
 
 
 def claim_months(context, inventory, targets):
@@ -456,13 +462,16 @@ def claim_months(context, inventory, targets):
             for _ in range(2):
                 target = next(queue, None)
                 if target:
-                    pending[pool.submit(_claim_worker, state, inventory, target)] = target
+                    future = pool.submit(copy_context().run, _claim_worker, state, inventory,
+                                         target)
+                    pending[future] = target
             while pending:
                 future = next(as_completed(pending))
                 target = pending.pop(future)
                 try:
                     completed = future.result()
                 except Exception as exc:
+                    inventory.log("month_worker_failed", **error_fields(exc))
                     inventory.stop_event.set()
                     inventory.report_issue(f"{target['bundle_name']} 处理异常"
                                            f"（{type(exc).__name__}）")
@@ -472,7 +481,9 @@ def claim_months(context, inventory, targets):
                 if not inventory.stop_event.is_set():
                     target = next(queue, None)
                     if target:
-                        pending[pool.submit(_claim_worker, state, inventory, target)] = target
+                        future = pool.submit(copy_context().run, _claim_worker, state, inventory,
+                                             target)
+                        pending[future] = target
         if inventory.stop_event.is_set():
             inventory.update("并行刮取已停止；已取得的 Key 已保存，未处理项目保留。")
             return

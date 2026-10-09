@@ -20,12 +20,15 @@ from urllib.parse import urlparse
 from playwright.async_api import async_playwright
 from playwright.sync_api import sync_playwright
 
+from humble_bundle_keys.api import normalise_key
 from humble_bundle_keys.async_inventory import ReadOnlyScanner
 from humble_bundle_keys.auth import AuthOptions, get_authenticated_context
 from humble_bundle_keys.availability import BLOCKED, REASONS, AvailabilityState
 from humble_bundle_keys.browser_choice import derive_membership_slug
 from humble_bundle_keys.choice_policy import choice_policy, upgrade_membership
 from humble_bundle_keys.deadlines import annotate_rows
+from humble_bundle_keys.diagnostics import error_fields, operation, scope, set_context
+from humble_bundle_keys.diagnostics import fields as diagnostic_fields
 from humble_bundle_keys.hb_activation import HBActivationState, read_account
 from humble_bundle_keys.key_tags import KeyTags
 from humble_bundle_keys.month_claim import claim_months, month_slug, preview_months
@@ -180,7 +183,8 @@ class Inventory:
             self.message = message
 
     def log(self, event: str, **fields):
-        entry = {"time": datetime.now(timezone.utc).isoformat(), "event": event, **fields}
+        entry = {"time": datetime.now(timezone.utc).isoformat(),
+                 "event": event, **diagnostic_fields(), **fields}
         self.logger.info(json.dumps(entry, ensure_ascii=False))
         for handler in self.logger.handlers:
             handler.close()
@@ -198,9 +202,17 @@ class Inventory:
 
     def publish(self, result):
         with self.lock:
+            # Validate all new key values before altering the saved snapshot.
+            rows = []
+            for row in result["rows"]:
+                with scope(phase="保存库存 Key", bundle=row.get("bundle_name", ""),
+                           game=row.get("game_title", "")):
+                    rows.append({**row, "key": normalise_key(row.get("key"))})
+            result = {**result, "rows": rows}
             reveal_times = {row['key']: row['revealed_at']
                             for row in self.snapshot['rows']
-                            if row.get('key') and row.get('revealed_at')}
+                            if isinstance(row.get('key'), str)
+                            and row.get('key') and row.get('revealed_at')}
             for row in result['rows']:
                 if row.get('key') in reveal_times:
                     row['revealed_at'] = reveal_times[row['key']]
@@ -278,6 +290,7 @@ class Inventory:
                 self.report.save(self.directory / "operation-report.json")
 
     def report_phase(self, phase, game="", bundle=""):
+        set_context(phase=phase, game=game, bundle=bundle)
         with self.lock:
             if self.report:
                 self.report.data.update(phase=phase, current_game=game, current_bundle=bundle)
@@ -378,11 +391,13 @@ class Inventory:
         threading.Thread(target=self.run, args=(action,), daemon=True).start()
         return True
 
+    @operation
     def run(self, action: str):
         report_error = None
         try:
             self.log("operation_started", action=action)
             self.directory.mkdir(parents=True, exist_ok=True)
+            set_context(phase="登录验证")
             with sync_playwright() as pw:
                 if action.startswith("steam") or action == "activate":
                     if action == "activate":
@@ -429,11 +444,12 @@ class Inventory:
                     session = context.storage_state()
                 finally:
                     browser.close()
+            set_context(phase="读取账户库存", bundle="", game="", order_ref="")
             asyncio.run(self.scan_async(session, full=action == "full-scan"))
         except Exception as exc:
             detail = safe_error(exc)
             report_error = detail
-            self.log("operation_failed", error=detail)
+            self.log("operation_failed", error=detail, **error_fields(exc))
             print(detail, flush=True)
             try:
                 (self.directory / "last-error.log").write_text(detail, encoding="utf-8")

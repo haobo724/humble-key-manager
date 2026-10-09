@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from humble_bundle_keys._orders_cache import OrderCache
 from humble_bundle_keys.api import ORDER_DETAIL_URL, ORDERS_LIST_URL, ApiError, _extract_tpk
 from humble_bundle_keys.browser_choice import SEL
+from humble_bundle_keys.diagnostics import error_fields, order_ref, scope
 
 
 def order_tpks(order):
@@ -90,84 +91,91 @@ class ReadOnlyScanner:
                       "scanned_at": datetime.now(timezone.utc).isoformat()})
 
     async def scan_order(self, gamekey):
-        try:
-            cached = None if self.full else self.cache.get(gamekey)
-            tpks = order_tpks(cached) if cached else []
-            # Refresh unresolved orders every run. Complete orders can reuse a six-hour cache.
-            if cached and tpks and all(t.get("redeemed_key_val") for t in tpks):
-                order = cached
-            else:
-                order = await self.get_json(ORDER_DETAIL_URL.format(gamekey=gamekey))
-                if not isinstance(order, dict):
-                    raise ApiError("订单详情格式无法识别")
-                order.setdefault("gamekey", gamekey)
-                self.cache.put(gamekey, order)
-            self.orders[gamekey] = order
-        except Exception as exc:
-            self.warnings.append(f"一个订单读取失败（{type(exc).__name__}）；旧记录保留。")
-            self.log("order_failed", order_id=hashlib.sha256(gamekey.encode()).hexdigest()[:10],
-                     error_type=type(exc).__name__)
-        finally:
-            self.completed += 1
-            self.update(f"读取订单 {self.completed}/{self.total} · 最多 3 个请求并发")
-            if self.completed % 20 == 0 or self.completed == self.total:
-                self.checkpoint()
+        with scope(phase="读取订单", bundle="", game="", order_ref=order_ref(gamekey)):
+            try:
+                cached = None if self.full else self.cache.get(gamekey)
+                tpks = order_tpks(cached) if cached else []
+                # Refresh unresolved orders every run. Complete orders can reuse a six-hour cache.
+                if cached and tpks and all(t.get("redeemed_key_val") for t in tpks):
+                    order = cached
+                else:
+                    order = await self.get_json(ORDER_DETAIL_URL.format(gamekey=gamekey))
+                    if not isinstance(order, dict):
+                        raise ApiError("订单详情格式无法识别")
+                    order.setdefault("gamekey", gamekey)
+                    self.cache.put(gamekey, order)
+                for tpk in order_tpks(order):
+                    _extract_tpk(tpk, order)  # Validate before publishing or replacing old records.
+                self.orders[gamekey] = order
+            except Exception as exc:
+                self.warnings.append(f"一个订单读取失败（{type(exc).__name__}）；旧记录保留。")
+                self.log("order_failed", order_id=hashlib.sha256(gamekey.encode()).hexdigest()[:10],
+                         **error_fields(exc))
+            finally:
+                self.completed += 1
+                self.update(f"读取订单 {self.completed}/{self.total} · 最多 3 个请求并发")
+                if self.completed % 20 == 0 or self.completed == self.total:
+                    self.checkpoint()
 
     async def scan_month(self, order, url, index, total):
-        async with self.month_slots:
-            slug = url.rsplit("/", 1)[-1]
-            cached = None if self.full else self.month_cache.get(slug)
-            if cached and cached.get("state") == "complete":
-                self.months[url] = cached
-            else:
-                page = await self.context.new_page()
-                cards = []
-                diagnostic = {"bundle": (order.get("product") or {}).get("human_name", ""),
-                              "month": slug, "reason": "no_cards"}
-                try:
-                    response = await page.goto(
-                        url, wait_until="domcontentloaded", timeout=30_000)
-                    diagnostic["http_status"] = response.status if response else None
-                    diagnostic["redirected"] = page.url.split("?")[0] != url
-                    if "/login" in page.url:
-                        diagnostic["reason"] = "redirected_to_login"
-                        raise ApiError("登录会话失效")
-                    if response and response.status >= 400:
-                        diagnostic["reason"] = "http_error"
-                        raise ApiError("月包页面请求失败")
-                    await page.locator(SEL["card"]).first.wait_for(
-                        state="attached", timeout=12_000)
-                    cards = await page.locator(SEL["card"]).evaluate_all("""
-                    elements => elements.map(e => ({
-                        title: (e.querySelector('.content-choice-title, .content-title')
-                                ?.textContent || '').trim(),
-                        claimed: e.classList.contains('claimed')
-                    }))""")
-                    if any(not c["title"] for c in cards):
-                        diagnostic["reason"] = "card_title_selector_mismatch"
-                        cards = []
-                except Exception as exc:
-                    if diagnostic["reason"] == "no_cards":
-                        diagnostic["reason"] = ("cards_not_found_or_load_timeout"
-                                                if "Timeout" in type(exc).__name__
-                                                else "navigation_failed")
-                    diagnostic["error_type"] = type(exc).__name__
-                    cards = []
-                finally:
-                    await page.close()
-                month = self.describe(order, cards, url)
-                self.months[url] = month
-                if month["state"] == "unknown":
-                    month["diagnostic"] = diagnostic
-                    self.warnings.append(f"{month['bundle_name']}：月包页面待核查"
-                                         f"（{diagnostic['reason']}），详见扫描日志。")
-                    self.log("month_failed", **diagnostic)
+        with scope(phase="读取月包页面", game="",
+                   bundle=(order.get("product") or {}).get("human_name", ""),
+                   order_ref=order_ref(order.get("gamekey"))):
+            async with self.month_slots:
+                slug = url.rsplit("/", 1)[-1]
+                cached = None if self.full else self.month_cache.get(slug)
+                if cached and cached.get("state") == "complete":
+                    self.months[url] = cached
                 else:
-                    self.month_cache.put(slug, month)
-                    self.log("month_scanned", month=slug, cards=len(cards), state=month["state"])
-            self.update(f"检查月包 {len(self.months)}/{total} · 最多 2 个页面并行")
-            if len(self.months) % 5 == 0 or len(self.months) == total:
-                self.checkpoint()
+                    page = await self.context.new_page()
+                    cards = []
+                    diagnostic = {"bundle": (order.get("product") or {}).get("human_name", ""),
+                                  "month": slug, "reason": "no_cards"}
+                    try:
+                        response = await page.goto(
+                            url, wait_until="domcontentloaded", timeout=30_000)
+                        diagnostic["http_status"] = response.status if response else None
+                        diagnostic["redirected"] = page.url.split("?")[0] != url
+                        if "/login" in page.url:
+                            diagnostic["reason"] = "redirected_to_login"
+                            raise ApiError("登录会话失效")
+                        if response and response.status >= 400:
+                            diagnostic["reason"] = "http_error"
+                            raise ApiError("月包页面请求失败")
+                        await page.locator(SEL["card"]).first.wait_for(
+                            state="attached", timeout=12_000)
+                        cards = await page.locator(SEL["card"]).evaluate_all("""
+                        elements => elements.map(e => ({
+                            title: (e.querySelector('.content-choice-title, .content-title')
+                                    ?.textContent || '').trim(),
+                            claimed: e.classList.contains('claimed')
+                        }))""")
+                        if any(not c["title"] for c in cards):
+                            diagnostic["reason"] = "card_title_selector_mismatch"
+                            cards = []
+                    except Exception as exc:
+                        if diagnostic["reason"] == "no_cards":
+                            diagnostic["reason"] = ("cards_not_found_or_load_timeout"
+                                                    if "Timeout" in type(exc).__name__
+                                                    else "navigation_failed")
+                        diagnostic.update(error_fields(exc))
+                        cards = []
+                    finally:
+                        await page.close()
+                    month = self.describe(order, cards, url)
+                    self.months[url] = month
+                    if month["state"] == "unknown":
+                        month["diagnostic"] = diagnostic
+                        self.warnings.append(f"{month['bundle_name']}：月包页面待核查"
+                                             f"（{diagnostic['reason']}），详见扫描日志。")
+                        self.log("month_failed", **diagnostic)
+                    else:
+                        self.month_cache.put(slug, month)
+                        self.log("month_scanned", month=slug, cards=len(cards),
+                                 state=month["state"])
+                self.update(f"检查月包 {len(self.months)}/{total} · 最多 2 个页面并行")
+                if len(self.months) % 5 == 0 or len(self.months) == total:
+                    self.checkpoint()
 
     async def run(self):
         body = await self.get_json(ORDERS_LIST_URL)

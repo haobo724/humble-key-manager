@@ -39,6 +39,7 @@ from playwright.sync_api import APIRequestContext, BrowserContext, Page
 
 from humble_bundle_keys._browser_fetch import post_form_in_browser
 from humble_bundle_keys._orders_cache import OrderCache
+from humble_bundle_keys.diagnostics import emit_failure, extracting, order_ref, set_context
 from humble_bundle_keys.models import ExtractStats, GameKey
 from humble_bundle_keys.regions import countries
 from humble_bundle_keys.scraper import PLATFORMS  # reuse the platform normalisation
@@ -98,6 +99,24 @@ def _expiry_to_deadline(tpk: dict[str, Any]) -> str:
     return ""
 
 
+def normalise_key(value: Any) -> str:
+    """Accept only a text key or an unambiguous named key wrapper.
+
+    Never stringify an opaque response object into an activation code.
+    """
+    if value is None or value == "":
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        candidates = {value[name] for name in ("key", "key_val", "redeemed_key_val")
+                      if isinstance(value.get(name), str) and value[name]}
+        if len(candidates) == 1:
+            return candidates.pop()
+    raise ApiUnsupported("密钥字段格式无法识别；该订单未执行刮取，请打开原页面核查。")
+
+
+@extracting
 def _extract_tpk(tpk: dict[str, Any], order: dict[str, Any]) -> GameKey:
     """Build a GameKey from one entry in tpkd_dict.all_tpks[]."""
     title = (
@@ -107,7 +126,7 @@ def _extract_tpk(tpk: dict[str, Any], order: dict[str, Any]) -> GameKey:
         or "(unknown)"
     )
     platform = _normalise_platform(tpk.get("key_type") or tpk.get("key_type_human_name"))
-    key_val = tpk.get("redeemed_key_val") or ""
+    key_val = normalise_key(tpk.get("redeemed_key_val"))
     # Order metadata lives under ``order.product``, NOT at the root. The root
     # has fields like gamekey, uid, created. Fall back to root for tolerance
     # against API shape changes.
@@ -229,18 +248,25 @@ class ApiScraper:
             rows: list[GameKey] = []
             for i, gk in enumerate(gamekeys, 1):
                 log.info("API: order %d/%d (%s)", i, len(gamekeys), gk[:6] + "…")
+                set_context(phase="读取订单", bundle="", game="", order_ref=order_ref(gk))
                 try:
                     order = self._get_order(gk)
                 except ApiError as e:
+                    emit_failure("order_failed", e)
                     self.stats.errors.append(f"order {gk}: {e}")
                     continue
 
-                self.orders.append(order)
                 tpks = self._extract_tpks(order)
+                try:
+                    parsed = [_extract_tpk(tpk, order) for tpk in tpks]
+                except ApiUnsupported as exc:
+                    emit_failure("order_parse_failed", exc)
+                    self.stats.errors.append("一个订单的密钥字段格式无法识别；未执行刮取。")
+                    continue
+                self.orders.append(order)
                 self.stats.bundles_processed += 1
 
-                for tpk in tpks:
-                    game = _extract_tpk(tpk, order)
+                for tpk, game in zip(tpks, parsed, strict=True):
                     # Reveal if not already revealed.
                     if (
                         not game.key
