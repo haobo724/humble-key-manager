@@ -1,10 +1,24 @@
 # Humble Key Manager
 
+## Changelog
+
+### 0.3.0
+
+- **重点：Steam 国区史低查询**，填自己的 ITAD API Key 就能用；勾选游戏时也能看到史低合计。
+- 刮取报错会记下包名、游戏名和处理阶段，方便知道卡在哪。并行刮取的日志也不会串到别的游戏。
+- 修复部分 Key 返回格式导致的报错；无法识别的订单会跳过，保留之前的库存记录。
+- 缺货记录不再因为官网没返回 Key 条目就从列表里消失，补货拿到 Key 后恢复正常显示。
+- 切换 tab 或分类会清空勾选，避免把上一类的游戏一起操作；调整状态、地区和标签筛选时保留勾选。
+- 加了脱敏日志导出，如果使用中遇到问题请附上日志文件
+- README 换成了按使用场景介绍，并更新了演示截图。
+
+---
+
 攒了好多年的 Humble Bundle，买的时候很积极，兑换的时候一直犯懒。
 等想起来，已经分不清哪些没领、哪些自己有了、哪些甚至过期了。
 所以做了这个本地可视化工具，想把积压的 Key 一次整理明白。
 
-目前只支持 Humble Bundle，也没打算接别家——毕竟我自己没买过别家的慈善包。
+目前只支持 Humble Bundle，暂不支持别的站的慈善包。
 
 [下载 Windows 运行包](https://github.com/haobo724/humble-key-manager/releases/latest) · [使用指南](https://github.com/haobo724/humble-key-manager/wiki/Usage) · [从源码运行](https://github.com/haobo724/humble-key-manager/wiki/Development)
 
@@ -51,7 +65,7 @@
 之后按标签筛选；出售、赠送和已激活的记录会排除批量激活。
 手动标为「已激活」会显示「已拥有（手动标记）」，标签按 HB 账户保存，重扫后还在。
 
-![预设标签、自定义备注与排除批量激活](assets/screenshots/tags.jpg)ss
+![预设标签、自定义备注与排除批量激活](assets/screenshots/tags.jpg)
 
 ## 双击运行，下次接着整理
 

@@ -31,6 +31,7 @@ from humble_bundle_keys.diagnostics import error_fields, operation, scope, set_c
 from humble_bundle_keys.diagnostics import fields as diagnostic_fields
 from humble_bundle_keys.hb_activation import HBActivationState, read_account
 from humble_bundle_keys.key_tags import KeyTags
+from humble_bundle_keys.log_export import export_logs
 from humble_bundle_keys.month_claim import claim_months, month_slug, preview_months
 from humble_bundle_keys.operation_report import OperationReport
 from humble_bundle_keys.prices import PriceStore
@@ -177,6 +178,14 @@ class Inventory:
         hydrate_app_ids(self.snapshot["rows"], directory)
         if hydrate_restrictions(self.snapshot["rows"], directory):
             atomic_json(directory / "inventory.json", self.snapshot)
+        original_count = len(self.snapshot["rows"])
+        restored = self.availability.restore_missing_rows(
+            self.snapshot, self.hb_activation.data["current_account"])
+        if restored or len(self.snapshot["rows"]) != original_count:
+            atomic_json(directory / "inventory.json", self.snapshot)
+        if restored:
+            self.log("availability_rows_restored", count=restored,
+                     reason="saved_shortage_record_missing_from_inventory")
 
     def update(self, message: str):
         with self.lock:
@@ -209,6 +218,8 @@ class Inventory:
                            game=row.get("game_title", "")):
                     rows.append({**row, "key": normalise_key(row.get("key"))})
             result = {**result, "rows": rows}
+            self.availability.restore_missing_rows(
+                result, self.hb_activation.data["current_account"])
             reveal_times = {row['key']: row['revealed_at']
                             for row in self.snapshot['rows']
                             if isinstance(row.get('key'), str)
@@ -545,6 +556,10 @@ def make_handler(inventory: Inventory, token: str):
                 with inventory.lock:
                     entries = list(inventory.logs)
                 return self.reply(entries)
+            if self.path == "/api/logs-export" and self.headers.get("X-Local-Token") == token:
+                with inventory.lock:
+                    entries = list(inventory.logs)
+                return self.reply(export_logs(inventory.directory, entries))
             if self.path == "/api/reveal-preview" and self.headers.get("X-Local-Token") == token:
                 return self.reply(preview_reveal(inventory.view()))
             self.reply({"error": "Not found"}, 404)

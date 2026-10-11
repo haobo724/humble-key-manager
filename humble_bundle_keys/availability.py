@@ -1,7 +1,9 @@
 """Known delivery problems, persisted separately for each Humble account."""
 import copy
+from dataclasses import asdict
 
 from humble_bundle_keys.deadlines import annotate_rows
+from humble_bundle_keys.models import GameKey
 from humble_bundle_keys.steam import atomic_json, utc_now
 
 REASONS = {
@@ -36,6 +38,34 @@ class AvailabilityState:
 
     def games(self, account, url):
         return self.data.get(account, {}).get(url.rstrip("/").rsplit("/", 1)[-1], {})
+
+    def restore_missing_rows(self, snapshot, account):
+        """Keep known shortages visible even when Humble omits their key entry."""
+        restored = 0
+        for month in snapshot.get("memberships", []):
+            marks = self.games(account, month["url"])
+            real_titles = {row["game_title"] for row in snapshot["rows"]
+                           if row.get("bundle_name") == month["bundle_name"]
+                           and not row.get("availability_restored")}
+            snapshot["rows"] = [row for row in snapshot["rows"]
+                                if not (row.get("availability_restored") and not row.get("key")
+                                        and row.get("bundle_name") == month["bundle_name"]
+                                        and (row["game_title"] in real_titles or
+                                             marks.get(row["game_title"], {}).get("status") !=
+                                             "key_temporarily_exhausted"))]
+            existing = {row["game_title"] for row in snapshot["rows"]
+                        if row.get("bundle_name") == month["bundle_name"]}
+            for title, mark in marks.items():
+                if mark["status"] != "key_temporarily_exhausted" or title in existing:
+                    continue
+                row = asdict(GameKey(game_title=title, platform="unknown", key="",
+                                     bundle_name=month["bundle_name"], humble_url=month["url"]))
+                row["availability_restored"] = True
+                row["status"] = "unrevealed"
+                snapshot["rows"].append(row)
+                existing.add(title)
+                restored += 1
+        return restored
 
     def annotate(self, snapshot, account):
         snapshot = copy.deepcopy(snapshot)
