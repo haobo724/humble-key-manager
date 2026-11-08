@@ -1,4 +1,5 @@
 """Account-scoped local labels; no plaintext activation keys are stored here."""
+import copy
 import json
 
 from humble_bundle_keys.steam import atomic_json, key_digest, row_id
@@ -30,10 +31,42 @@ class KeyTags:
         marks = self.data.setdefault(account, {})
         for row in rows:
             identity, record = identities(row)
-            marks[identity] = {"tags": labels, "exclude_activation": excluded}
+            source = marks.get(identity, marks.get(record, {})).get("activation_source", "manual")
+            marks[identity] = {"tags": labels, "exclude_activation": excluded,
+                               "activation_source": source if "已激活" in labels else None}
             if identity != record:
                 marks.pop(record, None)
         atomic_json(self.path, self.data)
+
+    def mark_activated(self, account, row, source, persist=True):
+        if not account:
+            raise ValueError("Humble 账户未识别，无法保存激活标签。")
+        marks = self.data.setdefault(account, {})
+        identity, record = identities(row)
+        mark = dict(marks.get(identity, marks.get(record, {})))
+        labels = list(mark.get("tags", []))
+        if "已激活" not in labels:
+            labels.append("已激活")
+            mark["activation_source"] = source
+        elif not mark.get("activation_source"):
+            mark["activation_source"] = "manual" if source == "manual" else source
+        mark["tags"] = labels
+        marks[identity] = mark
+        if identity != record:
+            marks.pop(record, None)
+        if persist:
+            atomic_json(self.path, self.data)
+
+    def apply_history(self, account, updates):
+        previous = self.data
+        self.data = copy.deepcopy(previous)
+        try:
+            for row, source in updates:
+                self.mark_activated(account, row, source, persist=False)
+            atomic_json(self.path, self.data)
+        except Exception:
+            self.data = previous
+            raise
 
     def annotate(self, rows, account):
         marks = self.data.get(account, {})
@@ -44,7 +77,8 @@ class KeyTags:
             mark = marks.get(identity, marks.get(record, {}))
             row["custom_tags"] = list(mark.get("tags", []))
             row["exclude_activation"] = bool(mark.get("exclude_activation"))
-            row["manual_activated"] = "已激活" in row["custom_tags"]
+            row["manual_activated"] = ("已激活" in row["custom_tags"]
+                                       and mark.get("activation_source") != "system")
             row["activation_excluded"] = (row["exclude_activation"]
                                           or bool(EXCLUDED_TAGS.intersection(row["custom_tags"])))
             result.append(row)

@@ -150,10 +150,19 @@ class SteamState:
                 row["steam_ownership"] = "owned"
             row["steam_library_ownership"] = row["steam_ownership"]
             if row.get("manual_activated"):
-                if row.get("platform") == "steam":
-                    row["steam_ownership"] = "owned"
                 if not result:
                     row["activation_status"] = "manually_activated"
+            confirmed = bool(result and result["status"] in {
+                "activated", "activated_elsewhere", "duplicate"})
+            if result and result["status"] == "duplicate":
+                row["manual_activated"] = True
+            row["key_activated"] = bool(confirmed or "已激活" in row.get("custom_tags", [])
+                                        or row.get("system_activated"))
+            row["custom_tags"] = list(row.get("custom_tags", []))
+            if row["key_activated"]:
+                if "已激活" not in row["custom_tags"]:
+                    row["custom_tags"].append("已激活")
+                row["activation_excluded"] = True
             annotated.append(row)
         return annotated
 
@@ -163,7 +172,7 @@ class SteamState:
                 "owned_count": len(library["apps"]) if library else None}
 
 
-def activation_candidates(rows, selected_ids, steam):
+def activation_candidates(rows, selected_ids, steam, *, include_owned=False):
     if not steam.account() or not steam.library():
         raise ValueError("请先登录 Steam 并同步游戏库，再预览激活清单。")
     ids = set(selected_ids)
@@ -182,7 +191,7 @@ def activation_candidates(rows, selected_ids, steam):
             reason = "非 Steam Key 或尚未刮取"
         elif row.get("deadline_state") == "expired":
             reason = "已过期"
-        elif row["steam_ownership"] == "owned":
+        elif not include_owned and row["steam_ownership"] == "owned":
             reason = "当前 Steam 库已拥有"
         elif row["activation_status"] in TERMINAL:
             reason = "已有明确结果或上次提交结果不确定，请核查"
@@ -274,9 +283,9 @@ def submit_key(page, key, session):
     }""", {"key": key, "session": session})
 
 
-def activate_batch(page, context, steam, rows, selected_ids, inventory):
-
-    candidates, skipped = activation_candidates(rows, selected_ids, steam)
+def activate_batch(page, context, steam, rows, selected_ids, inventory, *, include_owned=False):
+    candidates, skipped = activation_candidates(rows, selected_ids, steam,
+                                                include_owned=include_owned)
     account = account_from_context(context, page)
     if not account or account["steamid"] != steam.account()["steamid"]:
         raise RuntimeError("Steam 账号与预览不一致，请重新登录并预览。")
@@ -289,7 +298,7 @@ def activate_batch(page, context, steam, rows, selected_ids, inventory):
     for index, row in enumerate(candidates):
         if inventory.stop_event.is_set():
             break
-        if steam.annotate([row])[0]["steam_ownership"] == "owned":
+        if not include_owned and steam.annotate([row])[0]["steam_ownership"] == "owned":
             inventory.log("steam_activation_skipped", game=row["game_title"], reason="now_owned")
             continue
         inventory.update(f"Steam 激活 {index + 1}/{len(candidates)}：{row['game_title']}")
@@ -308,13 +317,16 @@ def activate_batch(page, context, steam, rows, selected_ids, inventory):
         steam.record(key, status, row.get("steam_app_id"))
         if status == "activated":
             inventory.mark_hb_activation(row, account["steamid"])
+        elif status == "duplicate":
+            inventory.mark_key_activated(row, source="duplicate")
         inventory.touch()
         inventory.log("steam_activation_result", game=row["game_title"], status=status)
         succeeded += status == "activated"
         if status in {"rate_limited", "uncertain"}:
             inventory.update("Steam 限流或提交结果不确定，已停止；请稍后核查，不自动重试。")
-            return
+            return "needs_attention"
         if inventory.stop_event.wait(5):
             break
     inventory.update(f"Steam 激活结束：成功 {succeeded}；详细结果已保存到列表。")
     inventory.log("steam_activation_complete", succeeded=succeeded)
+    return "stopped" if inventory.stop_event.is_set() else "completed"

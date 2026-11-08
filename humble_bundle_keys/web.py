@@ -20,6 +20,8 @@ from urllib.parse import urlparse
 from playwright.async_api import async_playwright
 from playwright.sync_api import sync_playwright
 
+from humble_bundle_keys.activation_history import candidates as history_candidates
+from humble_bundle_keys.activation_history import preview as history_preview
 from humble_bundle_keys.api import normalise_key
 from humble_bundle_keys.async_inventory import ReadOnlyScanner
 from humble_bundle_keys.auth import AuthOptions, get_authenticated_context
@@ -134,6 +136,7 @@ class Inventory:
         self.lock = threading.RLock()
         self.busy = False
         self.action = None
+        self.task = None
         self.stop_event = threading.Event()
         self.message = "尚未扫描。点击登录或扫描开始。"
         self.error = ""
@@ -241,8 +244,9 @@ class Inventory:
         with self.lock:
             snapshot = self.availability.annotate(
                 self.snapshot, self.hb_activation.data["current_account"])
-            return {**snapshot, "rows": self.prices.annotate(self.hb_activation.annotate(
-                        self.steam.annotate(annotate_regions(self.tagged_rows(snapshot["rows"]))))),
+            return {**snapshot, "rows": self.prices.annotate(self.steam.annotate(
+                        self.hb_activation.annotate(annotate_regions(
+                            self.tagged_rows(snapshot["rows"]))))),
                     "prices": self.prices.summary(),
                     "steam": self.steam.summary(), "busy": self.busy,
                     "humble_account": self.hb_activation.data["account_labels"].get(
@@ -250,7 +254,31 @@ class Inventory:
                     "month_preview": self.month_plan,
                     "operation_report": self.report.view() if self.report else None,
                     "message": self.message, "error": self.error, "revision": self.revision,
-                    "action": self.action}
+                    "action": self.action, "task": dict(self.task) if self.task else None,
+                    "activation_migration": history_preview(
+                        self.history_updates(), self.hb_activation.data["current_account"],
+                        self.revision)}
+
+    def history_updates(self):
+        return history_candidates(self.snapshot["rows"],
+                                  self.hb_activation.data["current_account"],
+                                  self.key_tags, self.hb_activation, self.steam)
+
+    def apply_activation_history(self, plan_id, revision):
+        with self.lock:
+            if self.busy or type(revision) is not int or revision != self.revision:
+                raise ValueError("任务正在运行或库存已变化，请刷新后重新确认。")
+            updates = self.history_updates()
+            account = self.hb_activation.data["current_account"]
+            plan = history_preview(updates, account, self.revision)
+            if not plan or plan["plan_id"] != plan_id:
+                raise ValueError("历史记录更新清单已变化，请刷新后重新确认。")
+            self.key_tags.apply_history(account, updates)
+            self.activation_plan = None
+            self.revision += 1
+            self.message = f"已根据本地记录更新 {len(updates)} 条库存状态，标签已保存。"
+            self.log("activation_history_updated", count=len(updates), source="local_receipts")
+            return {"updated": len(updates)}
 
     def tagged_rows(self, rows=None):
         return self.key_tags.annotate(self.snapshot["rows"] if rows is None else rows,
@@ -289,6 +317,12 @@ class Inventory:
                 result["humble_account"] = self.hb_activation.data["current_account"]
                 self.steam.save()
             self.hb_activation.record(row, steamid)
+            self.mark_key_activated(row, source="system")
+
+    def mark_key_activated(self, row, source):
+        with self.lock:
+            self.key_tags.mark_activated(self.hb_activation.data["current_account"], row, source)
+            self.revision += 1
 
     def touch(self):
         with self.lock:
@@ -330,20 +364,24 @@ class Inventory:
                 self.report.finish(stopped=self.stop_event.is_set(), error=error)
                 self.report.save(self.directory / "operation-report.json")
 
-    def plan_activation(self, selected_ids):
+    def plan_activation(self, selected_ids, *, include_owned=False):
         with self.lock:
             if not self.hb_activation.data["current_account"]:
                 raise ValueError("请先登录或扫描 Humble，识别激活标记所属账号。")
             if self.busy:
                 raise ValueError("已有操作正在执行，请结束后再预览。")
+            if type(include_owned) is not bool:
+                raise ValueError("尝试激活已拥有游戏的选项无效。")
             candidates, skipped = activation_candidates(
-                self.tagged_rows(), selected_ids, self.steam)
+                self.tagged_rows(), selected_ids, self.steam, include_owned=include_owned)
             self.activation_plan = {"id": secrets.token_urlsafe(24), "revision": self.revision,
                                     "humble_account": self.hb_activation.data["current_account"],
                                     "steamid": self.steam.account()["steamid"],
+                                    "include_owned": include_owned,
                                     "selected_ids": [r["id"] for r in candidates]}
             return {"plan_id": self.activation_plan["id"], "revision": self.revision,
                     "account": self.steam.account(), "skipped": skipped,
+                    "include_owned": include_owned,
                     "games": [{"game_title": r["game_title"],
                                "steam_ownership": r["steam_ownership"],
                                "steam_app_id": r.get("steam_app_id")} for r in candidates]}
@@ -389,6 +427,7 @@ class Inventory:
                 return False
             self.stop_event.clear()
             self.action = action
+            self.task = {"id": secrets.token_hex(12), "action": action, "status": "running"}
             self.action_options = options or {}
             if action == "month-preview":
                 self.month_plan = None
@@ -475,6 +514,18 @@ class Inventory:
             if action in {"reveal", "reveal-selected", "claim-months"}:
                 self.finish_report(report_error)
             with self.lock:
+                if self.task:
+                    if report_error:
+                        self.task["status"] = "failed"
+                    elif self.stop_event.is_set():
+                        self.task["status"] = "stopped"
+                    elif self.task["status"] == "running":
+                        self.task["status"] = "completed"
+                    self.task["message"] = self.error or self.message
+                    if action in {"reveal", "reveal-selected", "claim-months"} and self.report:
+                        report = self.report.view()
+                        self.task["report"] = {name: report[name] for name in (
+                            "succeeded", "skipped", "failed", "remaining", "issues")}
                 self.busy = False
 
     def run_steam(self, pw, action):
@@ -490,8 +541,12 @@ class Inventory:
             sync_library(page, self.steam)
             self.touch()
             if action == "activate":
-                activate_batch(page, context, self.steam, self.tagged_rows(),
-                               self.action_options["selected_ids"], self)
+                outcome = activate_batch(page, context, self.steam, self.tagged_rows(),
+                                         self.action_options["selected_ids"], self,
+                                         include_owned=self.action_options["include_owned"])
+                with self.lock:
+                    if self.task:
+                        self.task["status"] = outcome or "completed"
                 # Refresh the server's owned apps after confirmed mutations; keep per-key receipts.
                 try:
                     sync_library(page, self.steam)
@@ -570,6 +625,18 @@ def make_handler(inventory: Inventory, token: str):
             if (not self.local_host() or self.headers.get("X-Local-Token") != token
                     or (origin and origin != expected)):
                 return self.reply({"error": "Forbidden"}, 403)
+            if self.path == "/api/activation-history":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 4096:
+                        raise ValueError("请求内容无效。")
+                    data = json.loads(self.rfile.read(length))
+                    if not isinstance(data, dict) or data.get("confirm_update") is not True:
+                        raise ValueError("请确认更新历史库存状态。")
+                    return self.reply(inventory.apply_activation_history(
+                        data.get("plan_id"), data.get("revision")))
+                except (ValueError, OSError) as exc:
+                    return self.reply({"error": safe_error(exc)}, 400)
             if self.path in {"/api/prices-config", "/api/prices-refresh"}:
                 try:
                     if self.path == "/api/prices-config":
@@ -662,7 +729,8 @@ def make_handler(inventory: Inventory, token: str):
                                 or any(not isinstance(i, str) or len(i) != 24 for i in ids)):
                             raise ValueError("请选择记录")
                         if self.path == "/api/activation-preview":
-                            return self.reply(inventory.plan_activation(ids))
+                            return self.reply(inventory.plan_activation(
+                                ids, include_owned=body.get("include_owned", False)))
                         known = {row_id(r) for r in inventory.snapshot["rows"]}
                         if set(ids) - known:
                             raise ValueError("选择记录已变化")
@@ -683,7 +751,8 @@ def make_handler(inventory: Inventory, token: str):
                     return self.reply({"error": message}, 400)
             if not inventory.start(actions[self.path], revision, options):
                 return self.reply({"error": "已有操作正在执行，或清单已更新，请重新预览。"}, 409)
-            self.reply({"started": True}, 202)
+            self.reply({"started": True,
+                        "task_id": inventory.task["id"] if inventory.task else None}, 202)
     return Handler
 
 

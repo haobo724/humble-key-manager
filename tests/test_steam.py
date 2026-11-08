@@ -193,7 +193,7 @@ def test_http_activation_requires_preview_consent_and_matching_revision(tmp_path
     inventory = Inventory(tmp_path)
     inventory.steam.set_account("76561198000000001", "Test")
     inventory.steam.set_library([10])
-    inventory.snapshot["rows"] = [row("Eligible", 20)]
+    inventory.snapshot["rows"] = [row("Owned", 10)]
     inventory.bind_humble("synthetic-hb")
     server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(inventory, "test-token"))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -207,8 +207,13 @@ def test_http_activation_requires_preview_consent_and_matching_revision(tmp_path
             return json.load(response)
 
     try:
-        plan = post("/api/activation-preview", {
-            "selected_ids": [row_id(inventory.snapshot["rows"][0])]})
+        selection = {"selected_ids": [row_id(inventory.snapshot["rows"][0])]}
+        default = post("/api/activation-preview", selection)
+        assert not default["include_owned"] and not default["games"]
+        assert default["skipped"][0]["reason"] == "当前 Steam 库已拥有"
+        plan = post("/api/activation-preview", {**selection, "include_owned": True})
+        assert plan["include_owned"] and len(plan["games"]) == 1
+        assert plan["plan_id"] != default["plan_id"]
         body = {"plan_id": plan["plan_id"], "revision": plan["revision"]}
         with patch.object(inventory, "start", return_value=True) as start:
             for flags in [{}, {"accept_ssa": True}, {"confirm_activation": True}]:
@@ -220,6 +225,7 @@ def test_http_activation_requires_preview_consent_and_matching_revision(tmp_path
             args = start.call_args.args
             assert args[0] == "activate"
             assert args[2]["steamid"] == "76561198000000001"
+            assert args[2]["include_owned"] is True
         inventory.touch()
         with pytest.raises(HTTPError) as error:
             post("/api/activate", {**body, "accept_ssa": True, "confirm_activation": True})

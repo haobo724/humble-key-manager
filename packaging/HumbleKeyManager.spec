@@ -13,8 +13,9 @@ a = Analysis(
     hiddenimports=[],
     excludes=['pytest', 'PIL', 'tkinter'],
 )
-# Playwright's install bookkeeping contains paths from the build machine.
-a.datas = [item for item in a.datas if '/.links/' not in item[0].replace('\\', '/')]
+# Exclude browser bookkeeping and runtime logs from the build machine.
+a.datas = [item for item in a.datas if '/.links/' not in item[0].replace('\\', '/')
+           and not item[0].lower().endswith('.log')]
 if edge:
     a.datas = [item for item in a.datas if '/.local-browsers/' not in item[0].replace('\\', '/')]
     a.binaries = [item for item in a.binaries if '/.local-browsers/' not in item[0].replace('\\', '/')]

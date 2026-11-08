@@ -51,7 +51,7 @@ def test_tag_update_invalidates_plan_and_rejects_busy_or_stale_edit(tmp_path):
         inv.set_tags([row_id(row())], [], False, inv.revision)
 
 
-def test_manual_activation_is_owned_without_fabricating_steam_receipt(tmp_path):
+def test_manual_activation_is_separate_from_library_ownership(tmp_path):
     inv = Inventory(tmp_path)
     inv.hb_activation.data["current_account"] = "account"
     inv.snapshot["rows"] = [row()]
@@ -59,12 +59,14 @@ def test_manual_activation_is_owned_without_fabricating_steam_receipt(tmp_path):
     inv.steam.set_library([])
     inv.set_tags([row_id(row())], ["已激活"], False, inv.revision)
     current = inv.view()["rows"][0]
-    assert current["steam_ownership"] == "owned"
+    assert current["steam_ownership"] == "not_owned"
     assert current["steam_library_ownership"] == "not_owned"
     assert current["activation_status"] == "manually_activated"
     assert current["activation_excluded"] and not current["system_activated"]
+    assert current["key_activated"] and "已激活" in current["custom_tags"]
     assert inv.steam.result(row()["key"]) is None
     inv.set_tags([row_id(row())], [], False, inv.revision)
     current = inv.view()["rows"][0]
     assert current["steam_ownership"] == "not_owned"
     assert current["activation_status"] == "unknown"
+    assert not current["key_activated"]
