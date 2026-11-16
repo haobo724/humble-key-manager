@@ -70,6 +70,11 @@ class NewSteamRevealer:
             return {"status": "out_of_stock"}
         if not entitlement.get("redeemable") or entitlement.get("giftStatus") == "gifted":
             return {"status": "not_available_yet"}
+        self.resolve_action(document)
+        return self.submit(entitlement["id"], "steam",
+                           f"{LIBRARY_URL}/content/{row['modern_item_id']}")
+
+    def resolve_action(self, document):
         if not self.action:
             for url in script_urls(document):
                 self.action = redemption_action(self.text(url))
@@ -77,15 +82,19 @@ class NewSteamRevealer:
                     break
         if not self.action:
             raise ApiUnsupported("无法识别新版领取接口；未提交领取。")
+
+    def submit(self, entitlement_id, provider, url):
+        if not self.action:
+            raise ApiUnsupported("缺少已核对的官网领取接口；未提交领取。")
         # Exactly one mutation. A timeout or unrecognised reply is never retried.
         response = None
         try:
             response = self.context.request.post(
-                f"{LIBRARY_URL}/content/{row['modern_item_id']}",
+                url,
                 headers={"Next-Action": self.action, "Accept": "text/x-component",
                          "Origin": "https://www.humblebundle.com",
                          "Content-Type": "text/plain;charset=UTF-8"},
-                data=json.dumps([entitlement["id"], "steam", "$undefined"]), timeout=30_000)
+                data=json.dumps([entitlement_id, provider, "$undefined"]), timeout=30_000)
             if response.status != 200:
                 return {"status": "uncertain"}
             replies = [obj for obj in flight_records(response.text()) if isinstance(obj, dict)
@@ -110,6 +119,7 @@ def reveal_new_library(context, inventory, selected_ids=None):
     selected = set(selected_ids) if selected_ids is not None else None
     rows = [row.copy() for row in inventory.snapshot["rows"] if row.get("modern_entitlement_id")
             and not row.get("key") and row.get("platform") == "steam"
+            and not row.get("modern_group_url")
             and (selected is None or row_id(row) in selected)]
     if not rows:
         raise ValueError("所选记录中没有新版官网已分配的未刮取 Steam Key，请先扫描或打开官网核查。")

@@ -20,6 +20,9 @@ def choice_policy(product: dict, url: str = "") -> str:
 
 
 def upgrade_membership(month: dict) -> dict:
+    if month.get("source") == "humble_next" and "redemption_groups" in month:
+        month["choice_policy"] = "native"
+        return month
     policy = choice_policy({"human_name": month.get("bundle_name", "")}, month.get("url", ""))
     month["choice_policy"] = policy
     if policy == "all_games":

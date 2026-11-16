@@ -10,6 +10,7 @@ import secrets
 import socket
 import sys
 import threading
+import time
 import webbrowser
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -35,6 +36,8 @@ from humble_bundle_keys.hb_activation import HBActivationState, read_account
 from humble_bundle_keys.key_tags import KeyTags
 from humble_bundle_keys.log_export import export_logs
 from humble_bundle_keys.month_claim import claim_months, month_slug, preview_months
+from humble_bundle_keys.new_groups import NewGroupClient, claim_group, save_group_snapshot
+from humble_bundle_keys.new_groups import validate_selection as validate_group_selection
 from humble_bundle_keys.new_library import NewLibraryScanner
 from humble_bundle_keys.new_reveal import reveal_new_library
 from humble_bundle_keys.operation_report import OperationReport
@@ -147,6 +150,8 @@ class Inventory:
         self.logs = []
         self.activation_plan = None
         self.month_plan = None
+        self.group_detail = None
+        self.group_plan = None
         self.action_options = {}
         self.logger = logging.getLogger(f"humble-web.{id(self)}")
         self.logger.setLevel(logging.INFO)
@@ -255,6 +260,7 @@ class Inventory:
                     "humble_account": self.hb_activation.data["account_labels"].get(
                         self.hb_activation.data["current_account"]),
                     "month_preview": self.month_plan,
+                    "group_detail": self.group_detail,
                     "operation_report": self.report.view() if self.report else None,
                     "message": self.message, "error": self.error, "revision": self.revision,
                     "action": self.action, "task": dict(self.task) if self.task else None,
@@ -287,6 +293,29 @@ class Inventory:
         return self.key_tags.annotate(self.snapshot["rows"] if rows is None else rows,
                                       self.hb_activation.data["current_account"])
 
+    def group_url_allowed(self, url):
+        known = {m['url'] for m in self.snapshot['memberships'] if m.get('source') == 'humble_next'}
+        known.update(r.get('library_url') for r in self.snapshot['rows']
+                     if r.get('source') == 'humble_next')
+        if url not in known:
+            raise ValueError('分组不在当前库存中，请重新扫描。')
+
+    def plan_group(self, detail_id, selected_ids, revision):
+        with self.lock:
+            detail = self.group_detail
+            if (self.busy or type(revision) is not int or revision != self.revision
+                    or not detail or detail_id != detail['detail_id']):
+                raise ValueError('分组选项或库存已变化，请重新打开分组。')
+            options, quotas = validate_group_selection(detail, selected_ids)
+            self.group_plan = {'plan_id': secrets.token_hex(24), 'revision': self.revision,
+                               'account': self.hb_activation.data['current_account'],
+                               'url': detail['url'], 'fingerprint': detail['fingerprint'],
+                               'selected_ids': list(selected_ids), 'options': options,
+                               'quotas': quotas, 'title': detail['title'],
+                               'expires_at': time.monotonic() + 600}
+            return {k: self.group_plan[k] for k in (
+                'plan_id', 'revision', 'options', 'quotas', 'title')}
+
     def set_tags(self, ids, tags, excluded, revision):
         with self.lock:
             if self.busy or type(revision) is not int or revision != self.revision:
@@ -309,6 +338,7 @@ class Inventory:
                 self.snapshot = {"rows": [], "memberships": [], "scanned_at": None,
                                  "warnings": []}
                 self.activation_plan = self.month_plan = None
+                self.group_detail = self.group_plan = None
                 self.publish(self.snapshot)
             self.hb_activation.bind(identity, self.snapshot["rows"], self.steam, email=email)
             self.revision += 1
@@ -434,9 +464,12 @@ class Inventory:
             self.action_options = options or {}
             if action == "month-preview":
                 self.month_plan = None
+            if action == 'group-load':
+                self.group_detail = self.group_plan = None
             self.busy, self.error = True, ""
-            if action in {"reveal", "reveal-selected", "claim-months"}:
-                self.report = OperationReport(action, estimated=action != "claim-months")
+            if action in {"reveal", "reveal-selected", "claim-months", "group-claim"}:
+                self.report = OperationReport(action, estimated=action not in {
+                    "claim-months", "group-claim"})
                 self.report.save(self.directory / "operation-report.json")
             self.message = "正在连接 Humble；如弹出浏览器，请在官网完成登录。"
             if action.startswith("steam") or action == "activate":
@@ -470,14 +503,35 @@ class Inventory:
                     return
                 browser, context = get_authenticated_context(pw, AuthOptions(
                     storage_state_path=self.directory / "storage_state.json",
-                    headless=False, force_login=action == "login",
+                    headless=action == 'group-load', force_login=action == "login",
                     browser_channel=available_browser_channel(),
                 ))
                 try:
                     account = read_account(context)
+                    if (action == 'group-claim'
+                            and account['identity'] != self.action_options['account']):
+                        raise ValueError('HB 账号与分组预览不同，未领取；请重新登录并预览。')
                     self.bind_humble(account["identity"], account["email"])
                     if action == "login":
                         self.update("登录成功，现在可以扫描账户。")
+                        return
+                    if action == 'group-load':
+                        url = self.action_options['url']
+                        self.group_url_allowed(url)
+                        set_context(phase='读取新版分组选项与额度', game='', bundle=next((
+                            m['bundle_name'] for m in self.snapshot['memberships']
+                            if m['url'] == url), '新版游戏权益'))
+                        model, keys, _ = NewGroupClient(context).load(url)
+                        save_group_snapshot(self, model, keys)
+                        with self.lock:
+                            self.group_detail = {**model, 'detail_id': secrets.token_hex(16),
+                                                 'revision': self.revision}
+                        self.update('已读取官网分组选项和实际额度，请选择游戏与平台。')
+                        return
+                    if action == 'group-claim':
+                        if time.monotonic() > self.action_options['expires_at']:
+                            raise ValueError('分组预览已过期，未领取；请重新预览。')
+                        claim_group(context, self, self.action_options)
                         return
                     if action in {"reveal", "reveal-selected", "month-preview", "claim-months"}:
                         if session_status(context) == "authenticated":
@@ -524,7 +578,7 @@ class Inventory:
                     self.error = "登录或扫描窗口提前关闭。请重新登录，并保持窗口打开直到操作完成。"
                 self.message = "操作未完成；保留上次扫描记录。"
         finally:
-            if action in {"reveal", "reveal-selected", "claim-months"}:
+            if action in {"reveal", "reveal-selected", "claim-months", "group-claim"}:
                 self.finish_report(report_error)
             with self.lock:
                 if self.task:
@@ -535,7 +589,8 @@ class Inventory:
                     elif self.task["status"] == "running":
                         self.task["status"] = "completed"
                     self.task["message"] = self.error or self.message
-                    if action in {"reveal", "reveal-selected", "claim-months"} and self.report:
+                    if (action in {"reveal", "reveal-selected", "claim-months", "group-claim"}
+                            and self.report):
                         report = self.report.view()
                         self.task["report"] = {name: report[name] for name in (
                             "succeeded", "skipped", "failed", "remaining", "issues")}
@@ -654,6 +709,38 @@ def make_handler(inventory: Inventory, token: str):
             if (not self.local_host() or self.headers.get("X-Local-Token") != token
                     or (origin and origin != expected)):
                 return self.reply({"error": "Forbidden"}, 403)
+            if self.path in {'/api/group-load', '/api/group-preview', '/api/group-claim'}:
+                try:
+                    length = int(self.headers.get('Content-Length', '0'))
+                    if not 0 < length <= 100_000:
+                        raise ValueError('分组请求过大。')
+                    body = json.loads(self.rfile.read(length))
+                    if not isinstance(body, dict) or type(body.get('revision')) is not int:
+                        raise ValueError('请刷新分组后重新预览。')
+                    revision = body['revision']
+                    if self.path == '/api/group-preview':
+                        return self.reply(inventory.plan_group(
+                            body.get('detail_id'), body.get('selected_ids'), revision))
+                    if self.path == '/api/group-load':
+                        inventory.group_url_allowed(body.get('url'))
+                        options = {'url': body['url']}
+                        action = 'group-load'
+                    else:
+                        plan = inventory.group_plan
+                        if (body.get('confirm_claim') is not True or not plan
+                                or body.get('plan_id') != plan['plan_id']
+                                or revision != plan['revision']
+                                or time.monotonic() > plan['expires_at']):
+                            raise ValueError('请先预览并确认所选游戏、平台和额度。')
+                        options = dict(plan)
+                        action = 'group-claim'
+                    if not inventory.start(action, revision, options):
+                        return self.reply({'error': '任务进行中或库存已变化，请重新预览。'}, 409)
+                    return self.reply({'started': True,
+                                       'task_id': inventory.task['id']
+                                       if inventory.task else None}, 202)
+                except (ValueError, KeyError, TypeError) as exc:
+                    return self.reply({'error': safe_error(exc)}, 400)
             if self.path == "/api/activation-history":
                 try:
                     length = int(self.headers.get("Content-Length", "0"))

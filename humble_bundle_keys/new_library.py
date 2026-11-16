@@ -198,9 +198,7 @@ class NewLibraryScanner:
             unique[identity] = item
         duplicate_count = len(items) - len(unique)
         fresh = [row for item in unique.values() for row in rows_from_item(item)]
-        warnings = ["Humble 官网正在迁移历史订单：新版扫描会保留旧库存，不自动删除缺失记录。",
-                    "新版刮取只处理官网已分配的独立 Steam Key；"
-                    "需选择平台、游戏或额度的分组请在官网操作。"]
+        warnings = ["Humble 官网正在迁移历史订单：新版扫描会保留旧库存，不自动删除缺失记录。"]
         groups = [item for item in unique.values() if item.get("itemType") == "entitlement-group"]
         memberships = list(self.previous.get("memberships", []))
         known = {month["url"] for month in memberships}
@@ -212,8 +210,8 @@ class NewLibraryScanner:
                                     "unclaimed_titles": [], "total_games": 0, "claimed_games": 0,
                                     "source": "humble_next"})
         if groups:
-            warnings.append(f"发现 {len(groups)} 个需在官网核查选择规则的分组，已列入待核查；"
-                            "扫描未自动选择或领取。")
+            warnings.append(f"发现 {len(groups)} 个新版分组，可在「月包待选择 / 领取」"
+                            "中打开并选择游戏、平台；扫描本身不领取。")
         if duplicate_count:
             warnings.append(f"官网分页含 {duplicate_count} 条完全重复记录，已去重；"
                             "保留所有旧库存，可稍后重扫核对迁移变动。")
