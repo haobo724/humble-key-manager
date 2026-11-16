@@ -47,6 +47,15 @@ def eligible_tpk(order, tpk):
 
 
 def preview_reveal(snapshot):
+    if snapshot.get("backend") == "humble_next":
+        rows = [row for row in snapshot["rows"] if not row.get("key")
+                and row.get("platform") == "steam" and row.get("modern_entitlement_id")
+                and not row.get("modern_group_url")]
+        return {"key_records": len(rows), "ordinary_records": len(rows),
+                "modern_months": 0, "modern_games": 0,
+                "skipped_limited_months": 0, "revision": snapshot.get("revision", 0),
+                "notice": "这里只处理独立 Steam Key；新版分组请打开「选择游戏 / 平台」，"
+                          "校验额度并预览确认后领取。"}
     months = snapshot.get("memberships", [])
     modern_names = {m["bundle_name"] for m in months if m.get("choice_policy") == "all_games"}
     limited_names = {m["bundle_name"] for m in months if m.get("choice_policy") != "all_games"}
