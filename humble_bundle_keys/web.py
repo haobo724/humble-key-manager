@@ -35,10 +35,13 @@ from humble_bundle_keys.hb_activation import HBActivationState, read_account
 from humble_bundle_keys.key_tags import KeyTags
 from humble_bundle_keys.log_export import export_logs
 from humble_bundle_keys.month_claim import claim_months, month_slug, preview_months
+from humble_bundle_keys.new_library import NewLibraryScanner
+from humble_bundle_keys.new_reveal import reveal_new_library
 from humble_bundle_keys.operation_report import OperationReport
 from humble_bundle_keys.prices import PriceStore
 from humble_bundle_keys.regions import annotate_regions, hydrate_restrictions
 from humble_bundle_keys.reveal import preview_reveal, reveal_all
+from humble_bundle_keys.site_session import SESSION_URL, session_status
 from humble_bundle_keys.steam import (
     SteamState,
     activate_batch,
@@ -476,6 +479,16 @@ class Inventory:
                     if action == "login":
                         self.update("登录成功，现在可以扫描账户。")
                         return
+                    if action in {"reveal", "reveal-selected", "month-preview", "claim-months"}:
+                        if session_status(context) == "authenticated":
+                            if action in {"reveal", "reveal-selected"}:
+                                if self.snapshot.get("backend") != "humble_next":
+                                    raise ValueError("请先扫描新版官网，再选择需要刮取的项目。")
+                                reveal_new_library(context, self,
+                                                   self.action_options.get("selected_ids"))
+                                return
+                            raise ValueError("新版官网的选择分组请先在官网确认平台、游戏和额度；"
+                                             "未执行旧版月包领取请求。")
                     if action == "month-preview":
                         targets = preview_months(context, self, self.action_options["requests"])
                         with self.lock:
@@ -564,11 +577,27 @@ class Inventory:
             browser = await pw.chromium.launch(headless=False, channel=available_browser_channel())
             context = await browser.new_context(storage_state=session)
             try:
-                scanner = ReadOnlyScanner(
-                    context, self.directory, self.publish, self.update, describe_membership,
-                    membership_url, previous=self.snapshot, full=full, log=self.log,
-                    legacy=is_legacy_monthly,
-                )
+                response = await context.request.get(SESSION_URL, timeout=15_000)
+                try:
+                    modern = response.status == 200
+                    if modern:
+                        status = await response.json()
+                        if not isinstance(status, dict) or status.get("status") != "authenticated":
+                            raise ValueError("新版 Humble 会话已失效，请重新登录。")
+                    elif response.status != 404:
+                        raise ValueError("无法核对 Humble 会话；旧库存保留，请稍后重试。")
+                finally:
+                    await response.dispose()
+                if modern:
+                    scanner = NewLibraryScanner(
+                        context, self.publish, self.update, self.snapshot,
+                        self.hb_activation.data["current_account"], log=self.log)
+                else:
+                    scanner = ReadOnlyScanner(
+                        context, self.directory, self.publish, self.update, describe_membership,
+                        membership_url, previous=self.snapshot, full=full, log=self.log,
+                        legacy=is_legacy_monthly,
+                    )
                 await scanner.run()
                 self.update(f"扫描完成：{len(self.snapshot['rows'])} 条 Key 记录，"
                             f"{len(self.snapshot['memberships'])} 个 Choice 月包。")

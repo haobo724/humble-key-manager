@@ -4,14 +4,28 @@ import json
 import re
 
 from humble_bundle_keys.auth import KEYS_URL
+from humble_bundle_keys.site_session import account_email, session_status
 from humble_bundle_keys.steam import atomic_json, key_digest, utc_now
 
 
 def read_account(context):
+    status = session_status(context)
+    if status is not None:
+        if status != "authenticated":
+            raise ValueError("请先完成新版 Humble 登录。")
+        response = context.request.get(KEYS_URL, timeout=30_000)
+        try:
+            if response.status != 200:
+                raise ValueError("新版 Humble 账号页面读取失败。")
+            address = account_email(response.text())
+            return {"identity": hashlib.sha256(address.encode()).hexdigest(), "email": address}
+        finally:
+            response.dispose()
     page = context.new_page()
     try:
         page.goto(KEYS_URL, wait_until="domcontentloaded", timeout=30_000)
-        if "/home/keys" not in page.url or "/login" in page.url:
+        if (not any(path in page.url for path in ("/home/keys", "/home/library"))
+                or "/login" in page.url):
             raise ValueError("请先登录 Humble，才能保存账户激活标记。")
         email = re.search(r"[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+", page.title())
         if not email:

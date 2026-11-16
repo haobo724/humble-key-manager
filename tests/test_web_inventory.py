@@ -30,6 +30,9 @@ class WebInventoryTests(unittest.TestCase):
 
     def test_interactive_login_uses_selected_browser(self):
         playwright = MagicMock()
+        context = playwright.chromium.launch.return_value.new_context.return_value
+        context.storage_state.side_effect = lambda path: Path(path).write_text(
+            '{"cookies": [], "origins": []}', encoding="utf-8")
         with tempfile.TemporaryDirectory() as directory, \
                 patch("humble_bundle_keys.auth._is_authenticated", return_value=True):
             _interactive_login(playwright, Path(directory) / "state.json", "msedge")

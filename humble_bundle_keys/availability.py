@@ -72,7 +72,8 @@ class AvailabilityState:
         for month in snapshot["memberships"]:
             month["unavailable_games"] = self.games(account, month["url"])
             for row in snapshot["rows"]:
-                if row.get("key") or row.get("bundle_name") != month["bundle_name"]:
+                if (row.get("key") or row.get("source") == "humble_next"
+                        or row.get("bundle_name") != month["bundle_name"]):
                     continue
                 mark = month["unavailable_games"].get(row["game_title"])
                 if mark:

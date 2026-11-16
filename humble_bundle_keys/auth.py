@@ -6,9 +6,9 @@ We never ask the user for their password. There are two supported ways to
 get an authenticated browser context:
 
 1. Persisted storage state (default path: ``~/.humble-bundle-keys/storage_state.json``).
-   On first run, we open a real Chrome window pointed at humblebundle.com's
-   login page. The user logs in normally — including Humble's email 2FA — and
-   when the keys page is reachable, we save the cookies + localStorage to disk.
+   On first run, we open a real browser at auth.humblebundle.com.
+   The user completes email or Google sign-in,
+   then we verify the server session and save cookies + localStorage to disk.
    Subsequent runs reuse that file headlessly until it expires.
 
 2. ``HUMBLE_SESSION_COOKIE`` environment variable. If set, we build a fresh
@@ -17,7 +17,7 @@ get an authenticated browser context:
    they want to inject. Takes precedence over storage state.
 
 In both cases, before we hand the context off to the scraper, we navigate
-to /home/keys and confirm we're not redirected to the login page.
+to the official session endpoint and verify the server reports an authenticated session.
 """
 
 from __future__ import annotations
@@ -25,8 +25,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from playwright.sync_api import (
     Browser,
@@ -38,14 +40,14 @@ from playwright.sync_api import (
     TimeoutError as PlaywrightTimeoutError,
 )
 
-LOGIN_URL = "https://www.humblebundle.com/login"
-KEYS_URL = "https://www.humblebundle.com/home/keys"
+from humble_bundle_keys.site_session import LIBRARY_URL, LOGIN_URL, session_status
+
+KEYS_URL = LIBRARY_URL
 SESSION_COOKIE_NAME = "_simpleauth_sess"
 DEFAULT_STATE_DIR = Path.home() / ".humble-bundle-keys"
 DEFAULT_STATE_PATH = DEFAULT_STATE_DIR / "storage_state.json"
 
-# Heuristic: if we land on /home/keys and the URL still contains "keys",
-# we're authenticated. If we got redirected to /login, we're not.
+# Verify server-side session state rather than a transient client-side URL.
 AUTH_CHECK_TIMEOUT_MS = 15_000
 LOGIN_WAIT_TIMEOUT_MS = 5 * 60 * 1000  # 5 minutes for the user to finish logging in
 
@@ -96,58 +98,51 @@ def _build_context_from_cookie(browser: Browser, cookie_value: str) -> BrowserCo
 
 
 def _is_authenticated(page: Page) -> bool:
-    """Navigate to the keys page and decide whether we're logged in.
-
-    Humble redirects unauthenticated users to /login?goto=... — we treat any
-    final URL that doesn't contain ``/home/keys`` as 'not authenticated'.
-    """
+    """Check the server session; a visible library shell alone does not prove login."""
     try:
-        page.goto(KEYS_URL, wait_until="domcontentloaded", timeout=AUTH_CHECK_TIMEOUT_MS)
-    except PlaywrightTimeoutError:
+        status = session_status(page.context)
+        if status is not None:
+            return status == "authenticated"
+        response = page.goto(KEYS_URL, wait_until="domcontentloaded",
+                             timeout=AUTH_CHECK_TIMEOUT_MS)
+        url = urlparse(page.url)
+        return (response is not None and response.status == 200
+                and url.hostname == "www.humblebundle.com"
+                and url.path in {"/home/keys", "/home/library"}
+                and bool(re.search(r"[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+", page.title())))
+    except Exception:
         return False
-    final_url = page.url or ""
-    return "/home/keys" in final_url and "/login" not in final_url
 
 
 def _interactive_login(
     playwright: Playwright, state_path: Path, browser_channel: str | None = None,
 ) -> None:
-    """Open a real browser, let the user log in, persist state, close."""
-    log.info("Opening a browser window for first-time login.")
-    log.info("Log in normally — including any 2FA emails — then this will close automatically.")
-
+    """Start a fresh flow; preserve the previous session until the new one is valid."""
+    log.info("Opening Humble's official sign-in window; complete email or Google sign-in there.")
     browser = playwright.chromium.launch(headless=False, channel=browser_channel)
-    context = browser.new_context()
-    page = context.new_page()
-    page.goto(LOGIN_URL, wait_until="domcontentloaded")
-
-    # Wait for the user to land on a page that proves they're authenticated.
-    # We poll the URL since Humble's login flow goes through several redirects
-    # (and possibly a 2FA email step). We give the user up to 5 minutes.
+    temporary = state_path.with_suffix(".tmp")
     try:
-        page.wait_for_url(
-            lambda url: "/home/" in url or "/account" in url,
-            timeout=LOGIN_WAIT_TIMEOUT_MS,
-        )
-    except PlaywrightTimeoutError as e:
+        context = browser.new_context()
+        page = context.new_page()
+        page.goto(LOGIN_URL, wait_until="domcontentloaded")
+        try:
+            page.wait_for_url(
+                lambda url: urlparse(str(url)).hostname == "www.humblebundle.com"
+                and not urlparse(str(url)).path.startswith("/auth/"),
+                timeout=LOGIN_WAIT_TIMEOUT_MS,
+            )
+        except PlaywrightTimeoutError as exc:
+            raise AuthError("等待 Humble 登录超时，请完成官网的邮箱或 Google 登录。") from exc
+        if not _is_authenticated(page):
+            raise AuthError("官网返回后会话仍未验证，请重新完成登录。")
+        _ensure_state_dir(state_path)
+        context.storage_state(path=str(temporary))
+        temporary.replace(state_path)
+        log.info("Humble session saved.")
+    finally:
+        if temporary.exists():
+            temporary.unlink()
         browser.close()
-        raise AuthError(
-            "Timed out waiting for login. Re-run and finish the Humble login "
-            "(including any 2FA email step) within 5 minutes."
-        ) from e
-
-    # Final sanity check: actually navigate to /home/keys
-    if not _is_authenticated(page):
-        browser.close()
-        raise AuthError(
-            "Login appeared to succeed but /home/keys is still redirecting to login. "
-            "Double-check your account and try again."
-        )
-
-    _ensure_state_dir(state_path)
-    context.storage_state(path=str(state_path))
-    log.info("Saved session to %s", state_path)
-    browser.close()
 
 
 def get_authenticated_context(
@@ -181,11 +176,7 @@ def get_authenticated_context(
         )
 
     # 2. Saved storage state path.
-    if options.force_login and _state_exists(state_path):
-        log.info("--force-login set; deleting %s", state_path)
-        state_path.unlink()
-
-    if _state_exists(state_path):
+    if _state_exists(state_path) and not options.force_login:
         browser = playwright.chromium.launch(
             headless=options.headless, channel=options.browser_channel,
         )
