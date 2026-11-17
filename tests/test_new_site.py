@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,7 +13,12 @@ from humble_bundle_keys.auth import (
     _is_authenticated,
     get_authenticated_context,
 )
-from humble_bundle_keys.new_library import NewLibraryScanner, merge_rows, query_form, rows_from_item
+from humble_bundle_keys.new_library import (
+    NewLibraryScanner,
+    is_library_page_response,
+    merge_rows,
+    rows_from_item,
+)
 from humble_bundle_keys.site_session import (
     account_email,
     flight_records,
@@ -93,7 +99,14 @@ def test_new_stock_record_does_not_guess_platform_or_claim():
     row = rows_from_item(value)[0]
     assert row['unavailable_status'] == 'key_temporarily_exhausted' and not row['key']
     assert 'revealed_at' not in row and row['steam_app_id'] is None
-    assert query_form(3)['_1_page'] == '3' and query_form(3)['_1_hideRevealed'] == 'false'
+
+
+def test_match_native_pagination_response_with_query_string():
+    request = SimpleNamespace(method="POST", post_data='name="_1_page"\r\n\r\n12\r\n')
+    response = SimpleNamespace(
+        url="https://www.humblebundle.com/home/library?page=12", request=request)
+    assert is_library_page_response(response, 12)
+    assert not is_library_page_response(response, 1)
 
 
 @pytest.mark.parametrize('conflict', [False, True])
@@ -103,10 +116,6 @@ def test_scanner_reads_all_pages_before_publishing_and_handles_duplicates(confli
         None, published.append, lambda _: None, {'rows': [], 'memberships': []},
         hashlib.sha256(b'fixture@example.test').hexdigest())
 
-    async def text(url):
-        return document() if url.endswith('/home/library') else (
-            f'createServerReference)("{ACTION}",x,x,x,"filterUserLibrary")')
-
     async def query(page):
         value = item()
         if conflict and page == 2:
@@ -114,7 +123,10 @@ def test_scanner_reads_all_pages_before_publishing_and_handles_duplicates(confli
         return {'results': [value], 'success': True,
                 'pagination': {'page': page, 'totalPages': 2, 'totalDocs': 2}}
 
-    scanner.get_text, scanner.query = text, query
+    async def first():
+        return await query(1)
+
+    scanner.open_library, scanner.query = first, query
     if conflict:
         with pytest.raises(ApiUnsupported):
             asyncio.run(scanner.run())
