@@ -1,10 +1,10 @@
 """Read-only inventory queries for the redesigned Humble storefront."""
-import asyncio
 import hashlib
-import json
 import re
 from dataclasses import asdict
 from datetime import datetime, timezone
+
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from humble_bundle_keys.api import ApiError, ApiUnsupported, _normalise_platform, normalise_key
 from humble_bundle_keys.models import GameKey
@@ -12,17 +12,15 @@ from humble_bundle_keys.site_session import (
     LIBRARY_URL,
     account_email,
     flight_records,
-    library_action,
-    script_urls,
 )
 
 
-def query_form(page, limit=100):
-    return {"_1_requestId": str(page), "_1_query": "", "_1_sort": "mostRecent",
-            "_1_cursor": str(page * limit), "_1_page": str(page), "_1_limit": str(limit),
-            "_1_hideRevealed": "false", "_1_hideExpired": "false", "_1_dateExpires": "",
-            "0": json.dumps([{"results": [], "pagination": {
-                "page": 1, "totalPages": 1, "totalDocs": 0}, "success": True}, "$K1"])}
+def is_library_page_response(response, page):
+    request = response.request
+    if response.url.partition("?")[0] != LIBRARY_URL or request.method != "POST":
+        return False
+    field = rf'name="_1_page"\r?\n\r?\n{page}\r?\n'
+    return re.search(field, request.post_data or "") is not None
 
 
 def query_result(text):
@@ -120,85 +118,104 @@ def merge_rows(previous, fresh):
 
 
 class NewLibraryScanner:
-    def __init__(self, context, publish, update, previous, account, log=None):
+    def __init__(self, context, publish, update, previous, account, log=None, *, full=True):
         self.context, self.publish, self.update = context, publish, update
         self.previous, self.account = previous, account
         self.log = log or (lambda *args, **kwargs: None)
-        self.slots = asyncio.Semaphore(3)
-        self.action = None
+        self.page = None
+        self.full = full
 
-    async def get_text(self, url):
-        async with self.slots:
-            response = await self.context.request.get(url, timeout=30_000)
-            try:
-                if response.status != 200:
-                    raise ApiError(f"新版官网读取失败（HTTP {response.status}）；旧库存保留。")
-                return await response.text()
-            finally:
-                await response.dispose()
+    async def open_library(self):
+        self.page = await self.context.new_page()
+        async with self.page.expect_response(
+            lambda response: is_library_page_response(response, 1), timeout=45_000
+        ) as first:
+            document = await self.page.goto(
+                LIBRARY_URL, wait_until="domcontentloaded", timeout=30_000)
+            if document is None or document.status != 200:
+                status = document.status if document else "无响应"
+                raise ApiError(f"新版官网读取失败（HTTP {status}）；旧库存保留。")
+            identity = hashlib.sha256(account_email(await document.text()).encode()).hexdigest()
+            if identity != self.account:
+                raise ApiError("新版库账号与当前库存不一致；未更新库存，请重新登录。")
+        return await self.read_page(await first.value, 1)
+
+    async def read_page(self, response, page):
+        if response.status != 200:
+            raise ApiError(
+                f"官网游戏库第 {page} 页查询失败（HTTP {response.status}）；旧库存保留。")
+        result = query_result(await response.text())
+        if result["pagination"]["page"] != page:
+            raise ApiUnsupported("新版库返回了错误页码；旧库存保留。")
+        return result
 
     async def query(self, page):
-        async with self.slots:
-            for attempt in range(3):
-                response = await self.context.request.post(
-                    LIBRARY_URL, headers={"Next-Action": self.action,
-                                          "Accept": "text/x-component",
-                                          "Origin": "https://www.humblebundle.com"},
-                    multipart=query_form(page), timeout=30_000)
-                try:
-                    if response.status in {429, 500, 502, 503, 504} and attempt < 2:
-                        await asyncio.sleep(2 ** (attempt + 1))
-                        continue
-                    if response.status != 200:
-                        raise ApiError(f"新版库查询失败（HTTP {response.status}）；旧库存保留。")
-                    result = query_result(await response.text())
-                    if result["pagination"]["page"] != page:
-                        raise ApiUnsupported("新版库返回了错误页码；旧库存保留。")
-                    return result
-                finally:
-                    await response.dispose()
+        nav = self.page.locator('nav[aria-label="pagination"]')
+        await nav.locator(f'[aria-current="page"][href="/home/library?page={page - 1}"]').wait_for(
+            timeout=20_000)
+        next_link = nav.locator(f'a[href="/home/library?page={page}"]').filter(
+            has_text=re.compile(r"^\s*Next\s*$"))
+        async with self.page.expect_response(
+            lambda response: is_library_page_response(response, page), timeout=30_000
+        ) as pending:
+            await next_link.click(timeout=15_000)
+        return await self.read_page(await pending.value, page)
 
     async def run(self):
-        document = await self.get_text(LIBRARY_URL)
-        identity = hashlib.sha256(account_email(document).encode()).hexdigest()
-        if identity != self.account:
-            raise ApiError("新版库账号与当前库存不一致；未更新库存，请重新登录。")
-        urls = script_urls(document)
-        for offset in range(0, len(urls), 4):
-            sources = await asyncio.gather(*(self.get_text(url) for url in urls[offset:offset + 4]))
-            self.action = next((value for source in sources
-                                if (value := library_action(source))), None)
-            if self.action:
-                break
-        if not self.action:
-            raise ApiUnsupported("未识别官网新版只读查询接口；旧库存保留。")
-        first = await self.query(1)
+        try:
+            return await self.scan_pages()
+        except PlaywrightTimeoutError as exc:
+            raise ApiError("等待官网游戏库加载或翻页超时；旧库存保留。") from exc
+        finally:
+            if self.page is not None:
+                await self.page.close()
+
+    async def scan_pages(self):
+        first = await self.open_library()
         total = first["pagination"]["totalPages"]
+        upstream_total = first["pagination"]["totalDocs"]
         if total > 2000:
             raise ApiUnsupported("官网返回的分页数量异常；旧库存保留。")
-        items = list(first["results"])
-        self.update(f"新版游戏库：读取 1 / {max(1, total)} 页，每页最多 100 条。")
-        for start in range(2, total + 1, 3):
-            pages = await asyncio.gather(*(self.query(n)
-                                           for n in range(start, min(start + 3, total + 1))))
-            for page in pages:
-                if page["pagination"]["totalDocs"] != first["pagination"]["totalDocs"]:
-                    raise ApiError("扫描期间官网库存发生变化，请重新扫描；旧库存保留。")
-                items.extend(page["results"])
-            self.update(f"新版游戏库：读取 {min(start + 2, total)} / {total} 页。")
-        if len(items) != first["pagination"]["totalDocs"]:
-            raise ApiUnsupported("新版库记录数与分页汇总不一致；旧库存保留。")
+
+        known_ids = set(self.previous.get("modern_library_ids", []))
+        known_ids.update(row["modern_item_id"] for row in self.previous.get("rows", [])
+                         if row.get("modern_item_id"))
+        group_prefix = f"{LIBRARY_URL}/group/"
+        known_ids.update(month["url"][len(group_prefix):]
+                         for month in self.previous.get("memberships", [])
+                         if month.get("url", "").startswith(group_prefix))
         unique = {}
-        for item in items:
-            if not isinstance(item, dict) or not isinstance(item.get("id"), str):
-                raise ApiUnsupported("新版库条目格式变化；旧库存保留。")
-            identity = item["id"]
-            if identity in unique and unique[identity] != item:
-                raise ApiUnsupported("官网分页中同一条目内容冲突；旧库存保留，请稍后重试。")
-            unique[identity] = item
-        duplicate_count = len(items) - len(unique)
+        checked = known_matches = 0
+        stopped_early = False
+        for number in range(1, max(1, total) + 1):
+            page = first if number == 1 else await self.query(number)
+            pagination = page["pagination"]
+            if pagination["totalDocs"] != upstream_total or pagination["totalPages"] != total:
+                raise ApiError("扫描期间官网库存发生变化，请重新扫描；旧库存保留。")
+            for item in page["results"]:
+                if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                    raise ApiUnsupported("新版库存条目缺少标识。")
+                identity = item["id"]
+                if identity in unique:
+                    if unique[identity] != item:
+                        raise ApiUnsupported("官网分页中同一条目内容冲突；旧库存保留，请稍后重试。")
+                elif identity in known_ids:
+                    known_matches += 1
+                unique[identity] = item
+                checked += 1
+            self.update(f"新版游戏库：已读取 {number} / {max(1, total)} 页。")
+            if not self.full and known_matches >= 5 and number < total:
+                stopped_early = True
+                break
+
+        if checked > upstream_total or (not stopped_early and checked != upstream_total):
+            raise ApiUnsupported("新版库记录数与分页汇总不一致；旧库存保留。")
+        duplicate_count = checked - len(unique)
         fresh = [row for item in unique.values() for row in rows_from_item(item)]
         warnings = ["Humble 官网正在迁移历史订单：新版扫描会保留旧库存，不自动删除缺失记录。"]
+        if stopped_early:
+            warnings.append("增量扫描已遇到至少 5 条本地已有记录并停止；"
+                            "完整刷新可核对更早条目的变化。")
         groups = [item for item in unique.values() if item.get("itemType") == "entitlement-group"]
         memberships = list(self.previous.get("memberships", []))
         known = {month["url"] for month in memberships}
@@ -217,7 +234,10 @@ class NewLibraryScanner:
                             "保留所有旧库存，可稍后重扫核对迁移变动。")
         self.publish({"rows": merge_rows(self.previous.get("rows", []), fresh),
                       "memberships": memberships, "warnings": warnings,
-                      "partial": True, "backend": "humble_next", "upstream_total": len(items),
+                      "partial": True, "backend": "humble_next", "upstream_total": upstream_total,
+                      "modern_library_ids": sorted(known_ids | unique.keys()),
                       "scanned_at": datetime.now(timezone.utc).isoformat()})
-        self.log("new_library_scan_complete", rows=len(fresh), count=len(items),
+        self.log("new_library_scan_complete", rows=len(fresh), count=checked,
+                 known_matches=known_matches, stopped_early=stopped_early,
                  source="humble_next", reason="legacy_inventory_retained_during_migration")
+        return stopped_early

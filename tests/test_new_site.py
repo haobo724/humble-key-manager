@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,7 +13,12 @@ from humble_bundle_keys.auth import (
     _is_authenticated,
     get_authenticated_context,
 )
-from humble_bundle_keys.new_library import NewLibraryScanner, merge_rows, query_form, rows_from_item
+from humble_bundle_keys.new_library import (
+    NewLibraryScanner,
+    is_library_page_response,
+    merge_rows,
+    rows_from_item,
+)
 from humble_bundle_keys.site_session import (
     account_email,
     flight_records,
@@ -93,7 +99,14 @@ def test_new_stock_record_does_not_guess_platform_or_claim():
     row = rows_from_item(value)[0]
     assert row['unavailable_status'] == 'key_temporarily_exhausted' and not row['key']
     assert 'revealed_at' not in row and row['steam_app_id'] is None
-    assert query_form(3)['_1_page'] == '3' and query_form(3)['_1_hideRevealed'] == 'false'
+
+
+def test_match_native_pagination_response_with_query_string():
+    request = SimpleNamespace(method="POST", post_data='name="_1_page"\r\n\r\n12\r\n')
+    response = SimpleNamespace(
+        url="https://www.humblebundle.com/home/library?page=12", request=request)
+    assert is_library_page_response(response, 12)
+    assert not is_library_page_response(response, 1)
 
 
 @pytest.mark.parametrize('conflict', [False, True])
@@ -103,10 +116,6 @@ def test_scanner_reads_all_pages_before_publishing_and_handles_duplicates(confli
         None, published.append, lambda _: None, {'rows': [], 'memberships': []},
         hashlib.sha256(b'fixture@example.test').hexdigest())
 
-    async def text(url):
-        return document() if url.endswith('/home/library') else (
-            f'createServerReference)("{ACTION}",x,x,x,"filterUserLibrary")')
-
     async def query(page):
         value = item()
         if conflict and page == 2:
@@ -114,7 +123,10 @@ def test_scanner_reads_all_pages_before_publishing_and_handles_duplicates(confli
         return {'results': [value], 'success': True,
                 'pagination': {'page': page, 'totalPages': 2, 'totalDocs': 2}}
 
-    scanner.get_text, scanner.query = text, query
+    async def first():
+        return await query(1)
+
+    scanner.open_library, scanner.query = first, query
     if conflict:
         with pytest.raises(ApiUnsupported):
             asyncio.run(scanner.run())
@@ -123,3 +135,35 @@ def test_scanner_reads_all_pages_before_publishing_and_handles_duplicates(confli
         asyncio.run(scanner.run())
         assert len(published[0]['rows']) == 1
         assert published[0]['partial'] and any('重复' in x for x in published[0]['warnings'])
+
+
+@pytest.mark.parametrize("full", [False, True])
+def test_incremental_scan_counts_distinct_known_entries_across_pages(full):
+    published, requested = [], []
+    known = [item(f"known-{n}") for n in range(5)]
+    previous = {"rows": rows_from_item(known[0]), "memberships": [],
+                "modern_library_ids": [entry["id"] for entry in known[1:]]}
+    scanner = NewLibraryScanner(
+        None, published.append, lambda _: None, previous, "account", full=full)
+    pages = [
+        [*known[:4], item("new-1")],
+        [known[0], item("new-2")],
+        [known[4], item("new-3")],
+        [item("older")],
+    ]
+
+    async def query(page):
+        requested.append(page)
+        return {"results": pages[page - 1],
+                "pagination": {"page": page, "totalPages": 4, "totalDocs": 10}}
+
+    async def first():
+        return await query(1)
+
+    scanner.open_library, scanner.query = first, query
+    assert asyncio.run(scanner.run()) is not full
+    assert requested == ([1, 2, 3, 4] if full else [1, 2, 3])
+    saved = published[0]
+    assert {"new-1", "new-2", "new-3"} <= set(saved["modern_library_ids"])
+    assert ("older" in saved["modern_library_ids"]) is full
+    assert saved["upstream_total"] == 10

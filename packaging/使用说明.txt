@@ -1,6 +1,6 @@
 Humble Key Manager v__VERSION__
 
-重要：Humble Bundle 已改版，v0.3.1 及更早版本已无法正常登录、扫描和刮取，请升级至 v0.4.0 或更新版本。升级时保留原数据目录。
+v0.4.1 修复新版 Humble 游戏库读取时出现的 HTTP 403。请升级至 v0.4.1 或更新版本，升级时保留原数据目录。
 
 解压整个压缩包，双击 HumbleKeyManager.exe，浏览器会自动打开管理界面。
 无需安装 Python、uv 或浏览器依赖。登录窗口使用附带的 Chromium。
