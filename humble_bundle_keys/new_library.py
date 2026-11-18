@@ -118,11 +118,12 @@ def merge_rows(previous, fresh):
 
 
 class NewLibraryScanner:
-    def __init__(self, context, publish, update, previous, account, log=None):
+    def __init__(self, context, publish, update, previous, account, log=None, *, full=True):
         self.context, self.publish, self.update = context, publish, update
         self.previous, self.account = previous, account
         self.log = log or (lambda *args, **kwargs: None)
         self.page = None
+        self.full = full
 
     async def open_library(self):
         self.page = await self.context.new_page()
@@ -162,7 +163,7 @@ class NewLibraryScanner:
 
     async def run(self):
         try:
-            await self.scan_pages()
+            return await self.scan_pages()
         except PlaywrightTimeoutError as exc:
             raise ApiError("等待官网游戏库加载或翻页超时；旧库存保留。") from exc
         finally:
@@ -172,31 +173,49 @@ class NewLibraryScanner:
     async def scan_pages(self):
         first = await self.open_library()
         total = first["pagination"]["totalPages"]
+        upstream_total = first["pagination"]["totalDocs"]
         if total > 2000:
             raise ApiUnsupported("官网返回的分页数量异常；旧库存保留。")
-        items = list(first["results"])
-        self.update(f"新版游戏库：已读取 1 / {max(1, total)} 页。")
-        for number in range(2, total + 1):
-            page = await self.query(number)
-            pagination = page["pagination"]
-            if (pagination["totalDocs"] != first["pagination"]["totalDocs"]
-                    or pagination["totalPages"] != total):
-                raise ApiError("扫描期间官网库存发生变化，请重新扫描；旧库存保留。")
-            items.extend(page["results"])
-            self.update(f"新版游戏库：已读取 {number} / {total} 页。")
-        if len(items) != first["pagination"]["totalDocs"]:
-            raise ApiUnsupported("新版库记录数与分页汇总不一致；旧库存保留。")
+
+        known_ids = set(self.previous.get("modern_library_ids", []))
+        known_ids.update(row["modern_item_id"] for row in self.previous.get("rows", [])
+                         if row.get("modern_item_id"))
+        group_prefix = f"{LIBRARY_URL}/group/"
+        known_ids.update(month["url"][len(group_prefix):]
+                         for month in self.previous.get("memberships", [])
+                         if month.get("url", "").startswith(group_prefix))
         unique = {}
-        for item in items:
-            if not isinstance(item, dict) or not isinstance(item.get("id"), str):
-                raise ApiUnsupported("新版库条目格式变化；旧库存保留。")
-            identity = item["id"]
-            if identity in unique and unique[identity] != item:
-                raise ApiUnsupported("官网分页中同一条目内容冲突；旧库存保留，请稍后重试。")
-            unique[identity] = item
-        duplicate_count = len(items) - len(unique)
+        checked = known_matches = 0
+        stopped_early = False
+        for number in range(1, max(1, total) + 1):
+            page = first if number == 1 else await self.query(number)
+            pagination = page["pagination"]
+            if pagination["totalDocs"] != upstream_total or pagination["totalPages"] != total:
+                raise ApiError("扫描期间官网库存发生变化，请重新扫描；旧库存保留。")
+            for item in page["results"]:
+                if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                    raise ApiUnsupported("新版库存条目缺少标识。")
+                identity = item["id"]
+                if identity in unique:
+                    if unique[identity] != item:
+                        raise ApiUnsupported("官网分页中同一条目内容冲突；旧库存保留，请稍后重试。")
+                elif identity in known_ids:
+                    known_matches += 1
+                unique[identity] = item
+                checked += 1
+            self.update(f"新版游戏库：已读取 {number} / {max(1, total)} 页。")
+            if not self.full and known_matches >= 5 and number < total:
+                stopped_early = True
+                break
+
+        if checked > upstream_total or (not stopped_early and checked != upstream_total):
+            raise ApiUnsupported("新版库记录数与分页汇总不一致；旧库存保留。")
+        duplicate_count = checked - len(unique)
         fresh = [row for item in unique.values() for row in rows_from_item(item)]
         warnings = ["Humble 官网正在迁移历史订单：新版扫描会保留旧库存，不自动删除缺失记录。"]
+        if stopped_early:
+            warnings.append("增量扫描已遇到至少 5 条本地已有记录并停止；"
+                            "完整刷新可核对更早条目的变化。")
         groups = [item for item in unique.values() if item.get("itemType") == "entitlement-group"]
         memberships = list(self.previous.get("memberships", []))
         known = {month["url"] for month in memberships}
@@ -215,7 +234,10 @@ class NewLibraryScanner:
                             "保留所有旧库存，可稍后重扫核对迁移变动。")
         self.publish({"rows": merge_rows(self.previous.get("rows", []), fresh),
                       "memberships": memberships, "warnings": warnings,
-                      "partial": True, "backend": "humble_next", "upstream_total": len(items),
+                      "partial": True, "backend": "humble_next", "upstream_total": upstream_total,
+                      "modern_library_ids": sorted(known_ids | unique.keys()),
                       "scanned_at": datetime.now(timezone.utc).isoformat()})
-        self.log("new_library_scan_complete", rows=len(fresh), count=len(items),
+        self.log("new_library_scan_complete", rows=len(fresh), count=checked,
+                 known_matches=known_matches, stopped_early=stopped_early,
                  source="humble_next", reason="legacy_inventory_retained_during_migration")
+        return stopped_early

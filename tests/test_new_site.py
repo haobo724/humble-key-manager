@@ -135,3 +135,35 @@ def test_scanner_reads_all_pages_before_publishing_and_handles_duplicates(confli
         asyncio.run(scanner.run())
         assert len(published[0]['rows']) == 1
         assert published[0]['partial'] and any('重复' in x for x in published[0]['warnings'])
+
+
+@pytest.mark.parametrize("full", [False, True])
+def test_incremental_scan_counts_distinct_known_entries_across_pages(full):
+    published, requested = [], []
+    known = [item(f"known-{n}") for n in range(5)]
+    previous = {"rows": rows_from_item(known[0]), "memberships": [],
+                "modern_library_ids": [entry["id"] for entry in known[1:]]}
+    scanner = NewLibraryScanner(
+        None, published.append, lambda _: None, previous, "account", full=full)
+    pages = [
+        [*known[:4], item("new-1")],
+        [known[0], item("new-2")],
+        [known[4], item("new-3")],
+        [item("older")],
+    ]
+
+    async def query(page):
+        requested.append(page)
+        return {"results": pages[page - 1],
+                "pagination": {"page": page, "totalPages": 4, "totalDocs": 10}}
+
+    async def first():
+        return await query(1)
+
+    scanner.open_library, scanner.query = first, query
+    assert asyncio.run(scanner.run()) is not full
+    assert requested == ([1, 2, 3, 4] if full else [1, 2, 3])
+    saved = published[0]
+    assert {"new-1", "new-2", "new-3"} <= set(saved["modern_library_ids"])
+    assert ("older" in saved["modern_library_ids"]) is full
+    assert saved["upstream_total"] == 10

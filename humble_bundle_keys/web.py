@@ -252,7 +252,9 @@ class Inventory:
         with self.lock:
             snapshot = self.availability.annotate(
                 self.snapshot, self.hb_activation.data["current_account"])
-            return {**snapshot, "rows": self.prices.annotate(self.steam.annotate(
+            public_snapshot = {key: value for key, value in snapshot.items()
+                               if key != "modern_library_ids"}
+            return {**public_snapshot, "rows": self.prices.annotate(self.steam.annotate(
                         self.hb_activation.annotate(annotate_regions(
                             self.tagged_rows(snapshot["rows"]))))),
                     "prices": self.prices.summary(),
@@ -646,15 +648,17 @@ class Inventory:
                 if modern:
                     scanner = NewLibraryScanner(
                         context, self.publish, self.update, self.snapshot,
-                        self.hb_activation.data["current_account"], log=self.log)
+                        self.hb_activation.data["current_account"], log=self.log, full=full)
                 else:
                     scanner = ReadOnlyScanner(
                         context, self.directory, self.publish, self.update, describe_membership,
                         membership_url, previous=self.snapshot, full=full, log=self.log,
                         legacy=is_legacy_monthly,
                     )
-                await scanner.run()
-                self.update(f"扫描完成：{len(self.snapshot['rows'])} 条 Key 记录，"
+                stopped_early = await scanner.run()
+                prefix = ("增量扫描完成（已遇到 5 条已有记录）"
+                          if modern and stopped_early else "扫描完成")
+                self.update(f"{prefix}：{len(self.snapshot['rows'])} 条 Key 记录，"
                             f"{len(self.snapshot['memberships'])} 个 Choice 月包。")
                 self.log("scan_complete", rows=len(self.snapshot["rows"]),
                          months=len(self.snapshot["memberships"]),
